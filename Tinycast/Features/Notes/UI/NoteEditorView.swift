@@ -2,6 +2,12 @@ import AppKit
 import SwiftUI
 
 struct NoteEditorView: NSViewRepresentable {
+    private struct ObserverToken: @unchecked Sendable {
+        private let raw: any NSObjectProtocol
+        init(_ raw: any NSObjectProtocol) { self.raw = raw }
+        func remove() { NotificationCenter.default.removeObserver(raw) }
+    }
+
     let input: NoteEditorInput
     let rendersMarkdown: Bool
     let onSourceChange: (String) -> Void
@@ -53,7 +59,7 @@ struct NoteEditorView: NSViewRepresentable {
 
         private var input: NoteEditorInput
         private var isInstalling = false
-        private var undoObservers: [any NSObjectProtocol] = []
+        private var undoObservers: [ObserverToken] = []
         /// Held here because the layout manager keeps its delegate weakly.
         private let fragmentProvider = NoteLayoutFragmentProvider()
 
@@ -64,23 +70,23 @@ struct NoteEditorView: NSViewRepresentable {
             super.init()
             let center = NotificationCenter.default
             undoObservers = [
-                center.addObserver(
+                ObserverToken(center.addObserver(
                     forName: Notification.Name("NSUndoManagerDidUndoChangeNotification"),
                     object: editorUndoManager, queue: .main
                 ) { [weak self] _ in
                     MainActor.assumeIsolated { self?.sourceDidChange() }
-                },
-                center.addObserver(
+                }),
+                ObserverToken(center.addObserver(
                     forName: Notification.Name("NSUndoManagerDidRedoChangeNotification"),
                     object: editorUndoManager, queue: .main
                 ) { [weak self] _ in
                     MainActor.assumeIsolated { self?.sourceDidChange() }
-                }
+                })
             ]
         }
 
         deinit {
-            for observer in undoObservers { NotificationCenter.default.removeObserver(observer) }
+            for observer in undoObservers { observer.remove() }
         }
 
         private func attach() {

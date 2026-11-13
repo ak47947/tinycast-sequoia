@@ -5,20 +5,19 @@ import Foundation
 @Observable
 final class RegionNumberFormatMonitor {
     private(set) var system = RegionNumberFormatMonitor.read()
-    @ObservationIgnored private var token: (any NSObjectProtocol)?
+    @ObservationIgnored private var token: ObserverToken?
 
     init() {
-        token = NotificationCenter.default.addObserver(
-            forName: Notification.Name("NSCurrentLocaleDidChangeNotification"),
-            object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.system = Self.read() }
-        }
+        token = ObserverToken(
+            NotificationCenter.default.addObserver(
+                forName: Notification.Name("NSCurrentLocaleDidChangeNotification"),
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.system = Self.read() }
+            })
     }
 
-    deinit {
-        if let token { NotificationCenter.default.removeObserver(token) }
-    }
+    deinit { token?.remove() }
 
     func format(for style: CalcNumberStyle) -> CalcNumberFormat {
         style == .system ? system : .english
@@ -31,4 +30,10 @@ final class RegionNumberFormatMonitor {
             decimalSeparator: locale.decimalSeparator ?? ".", groupingSeparator: locale.groupingSeparator)
             ?? .english
     }
+}
+
+private struct ObserverToken: @unchecked Sendable {
+    private let raw: any NSObjectProtocol
+    init(_ raw: any NSObjectProtocol) { self.raw = raw }
+    func remove() { NotificationCenter.default.removeObserver(raw) }
 }
