@@ -66,13 +66,8 @@ enum TextTranslator {
     private static func translate(
         _ text: String, from source: Locale.Language, to target: Locale.Language
     ) async throws -> String {
-        do {
-            let session = TranslationSession(installedSource: source, target: target)
-            return try await session.translate(text).targetText
-        } catch {
-            try Task.checkCancellation()
-            throw Failure.failed
-        }
+        // TranslationSession's standalone initializer is macOS 26 only; Sequoia has no equivalent.
+        throw Failure.failed
     }
 
     /// A download is a locale, so the region a bare code resolves to can miss the one installed.

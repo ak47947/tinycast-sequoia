@@ -356,7 +356,7 @@ struct RootPaletteView: View {
                 .background(isCollapsed ? .clear : Theme.Colors.panelScrim)
                 // Square, as rounded glass feathers its edge; the clip alone cuts a crisp corner.
                 .background {
-                    if !isCollapsed { Rectangle().fill(.ultraThinMaterial) }
+                    Rectangle().fill(.ultraThinMaterial).opacity(isCollapsed ? 0 : 1)
                 }
                 .overlay {
                     Theme.Colors.dialogDimming
@@ -494,7 +494,7 @@ struct RootPaletteView: View {
                 if menuOpen { closeMenus() }
                 searchFocused = true
                 // Next turn, past the refocus that selects all, so typing extends the answer.
-                Task { @MainActor in (hostWindow as? PalettePanel)?.moveFieldEditorCaretToEnd() }
+                scheduleCaretMoveToEnd()
             }
             .onChange(of: vm.favoriteSlotToken) {
                 if let index = vm.favoriteSlotIndex { performShortcut(.favoriteSlot(index)) }
@@ -1378,6 +1378,10 @@ struct RootPaletteView: View {
     }
 
     // MARK: - Actions
+
+    private func scheduleCaretMoveToEnd() {
+        Task { @MainActor in (hostWindow as? PalettePanel)?.moveFieldEditorCaretToEnd() }
+    }
 
     /// Every reset lands here, so handlers that fire together agree in whatever order they run.
     private func land(restoringSelection: Bool = false) {

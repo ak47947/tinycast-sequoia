@@ -14,6 +14,12 @@ sources themselves — there is no patch to apply and no second tree to keep in 
   `.deviceNotEligible` and `AIProviderFactory` rejects that route. Every other AI provider and all
   MCP tool calling still work.
 
+- macOS 26's Observation-based NotificationCenter API and `posix_spawn_file_actions_addchdir` are
+  replaced with their macOS 15 equivalents.
+- Three macOS 26-only integrations are disabled: MCP OAuth loopback sign-in, the OpenCode TCP/MCP
+  bridge and the Quick Actions text translator. AI chat, stdio/HTTP MCP tools, dictation, camera,
+  calendar, window switcher and everything else work.
+
 Everything else is upstream `v0.12.11` verbatim.
 
 ## Build & install
