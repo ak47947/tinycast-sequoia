@@ -409,7 +409,7 @@ struct RootPaletteView: View {
     /// Split from `body` for the same reason `keyHandlers` is: one chain cannot carry them all.
     @ViewBuilder
     private func stateObservers(_ content: some View) -> some View {
-        emojiObservers(content)
+        let early = emojiObservers(content)
             // Every show bumps focusToken so the search field refocuses.
             .onChange(of: vm.focusToken) {
                 resetCompactSelection()
@@ -483,6 +483,13 @@ struct RootPaletteView: View {
                     Task { await extensions.stop() }
                 }
             }
+        finalObservers(early)
+    }
+
+    /// Split again: the Sequoia-target build needs a shorter chain for the type checker.
+    @ViewBuilder
+    private func finalObservers(_ content: some View) -> some View {
+        content
             // `prepare` may change nothing else, so this still lands the list as freshly opened.
             .onChange(of: vm.resetToken) {
                 if menuOpen { closeMenus() }
