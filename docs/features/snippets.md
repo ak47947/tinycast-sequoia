@@ -1,13 +1,14 @@
 # Snippets
 
 Snippets are reusable plain-text templates stored as Markdown. They can be expanded from launcher
-results, or automatically when an enabled keyword is typed in another app.
+results, from the dedicated browser below, or automatically when an enabled keyword is typed in
+another app.
 
 ## Invariants
 
 - **Snippets are channel-isolated and path-identified.** They persist under
-  `~/Library/Application Support/<bundle-id>/Snippets/`; `StoredSnippet.ID` is the standardized source
-  path, and an external rename is a delete plus a create.
+  `~/Library/Application Support/<bundle-id>/Snippets/` unless the user chooses a folder;
+  `StoredSnippet.ID` is the standardized source path, and an external rename is a delete plus a create.
 - **The feature ships off, and its enable switch doubles as keyword-expansion consent.**
   `snippetsEnabled` is excluded from settings backups, and Accessibility — the only permission it needs,
   since the listen-only tap needs nothing more — may be requested **only** from that explicit Settings
@@ -15,6 +16,12 @@ results, or automatically when an enabled keyword is typed in another app.
 - **All of `Model/` and `Service/` compiles into `snippets-test`** (it globs both), so the model, Markdown
   serializer, template engine, repository and keyword policies stay Foundation-only, and the AppKit files
   there keep their dependencies to what the harness can stub.
+- **Expansion goes where the caret is, which is not the frontmost application.** Our panels are
+  non-activating, so a key window of ours receives the keystrokes while `frontmostApplication` still
+  names the app behind it. `InjectionTarget.current()` resolves the destination from
+  `NSApp.keyWindow` first, and only falls back to the frontmost app when no window of ours holds key.
+  A key window of ours that is *not* an `InjectableTextView` — the palette's own search field, a
+  Settings form — resolves to no target at all, so a keyword typed there expands nowhere.
 - The on-disk Markdown format is user-authored and user-editable — an interchange format, not an internal
   one.
 
@@ -25,6 +32,12 @@ Each app channel owns a separate library:
 ```text
 ~/Library/Application Support/<bundle-id>/Snippets/
 ```
+
+**Snippets Folder** in the Snippets pane, or `snippets.folder` in the [settings file](settings-file.md),
+points the library at another folder, absolute or under `~/`, as it is: nothing moves out of the old one.
+`AppPaths.contentFolder` resolves it once, so a folder that is a symlink lists like any other, and
+`SnippetsStore.relocate` stops, swaps and reloads. The folder is excluded from backups, since it names
+a place on this Mac.
 
 Debug (`com.tinycast.app.dev`), beta, and stable therefore never share snippet files. The storage
 root and bundle identifier are injectable in the standalone harness so tests cannot touch a real
@@ -47,18 +60,20 @@ is the whole feature, keyword expansion included — there is no separate expans
 enabling it doubles as keyword-expansion consent: it confirms with an explanation first, then
 requests Accessibility, and it ships off. Switching it off is a full teardown — the keyword listener,
 the store and its watchers stop, and the launcher section disappears — while the files and the toggle
-states survive for re-enabling. "Show in launcher" only hides the launcher section; keyword expansion
-keeps working. `snippetsShowInLauncher` travels in settings backups; `snippetsEnabled` deliberately
-does not, so an import can never enable keystroke listening. `AppCore`'s settings sinks re-project on
-every change.
+states survive for re-enabling. "Show in launcher" takes the section and the two Snippet commands out
+of the launcher together; keyword expansion and the browser's shortcut keep working.
+`snippetsShowInLauncher` travels in settings backups; `snippetsEnabled` deliberately does not, so an
+import can never enable keystroke listening — which is why either importer's summary says the switch is
+still off when snippets land, so a dormant keyword doesn't read as a broken one. `AppCore`'s settings
+sinks re-project on every change.
 
 ## Importing from Raycast
 
 The encrypted `.rayconfig` flow in **Settings → Backup** can import Raycast's built-in snippets as
-an independently selectable category. Tinycast reads `name`, `text`, and the optional `keyword` from
-the backup's `builtin_package_snippets.snippets` collection. Invalid entries are skipped; valid entries
-are added in source order without overwriting the existing library. Duplicate names receive the same
-filename suffixes as snippets created in Tinycast, and duplicate keywords are preserved.
+an independently selectable category. Tinycast reads `title`, `text` and the optional `keyword` from
+the export's `snippets.snippets` collection. Invalid entries are skipped; valid entries are added in
+source order without overwriting the existing library. Duplicate names receive the same filename
+suffixes as snippets created in Tinycast, and duplicate keywords are preserved.
 
 Imported snippets are enabled and launcher-visible, with their confirmation off. Importing
 never enables automatic keyword expansion. A failure writing the snippet files is reported in the
@@ -116,14 +131,16 @@ so a migrated snippet keeps working.
 | `{date format="yyyy-MM-dd"}`               | Any `DateFormatter` format                                                                                                                                                                                         |
 | `{date locale="fr-FR"}`                    | Renders in another locale; cannot be combined with `format`                                                                                                                                                        |
 | `{time offset="+3h +30m"}`                 | Signed offsets, space-separated: `m` minutes, `h` hours, `d` days, `M` months, `y` years                                                                                                                           |
-| `{argument}`                               | An argument named `Argument`                                                                                                                                                                                       |
+| `{argument}` · `{query}`                   | An argument named `Argument`. `{query}` is Raycast's spelling, accepted on the way in; `{argument}` is the canonical one and the only one **Insert…** writes                                                         |
 | `{argument name="Recipient"}`              | A named argument requested before expansion                                                                                                                                                                        |
 | `{argument default="Hi"}`                  | Optional argument — the default expands without prompting                                                                                                                                                          |
 | `{argument options="a, b, c"}`             | The prompt offers a picker instead of a text field                                                                                                                                                                 |
 | `{snippet:Name}` · `{snippet name="Name"}` | Another snippet resolved by name, then keyword                                                                                                                                                                     |
 | `{cursor}`                                 | Final insertion point                                                                                                                                                                                              |
 
-The editor's **Insert…** menu lists every token above; parameters and modifiers are typed by hand.
+The editor's **Insert…** menu lists every token above; parameters and modifiers are typed by hand. A
+parameter value needs quotes only to carry a `|`: an unquoted one runs to the next `key=`, so
+`{date format=MMMM d, yyyy}` keeps its spaces the way Raycast writes it.
 
 Any value-producing token accepts a modifier pipeline, applied left to right:
 `{clipboard | trim | uppercase}`. The modifiers are `uppercase`, `lowercase`, `trim`,
@@ -142,6 +159,11 @@ Arguments are unique and requested in first-appearance order, including argument
 snippets. Inserted clipboard, selection, and argument values are literal: token-shaped text inside a
 value is not expanded again.
 
+`{selection}` is read through Accessibility. When that reads nothing, a snippet you insert yourself —
+from the launcher, Search Snippets or its shortcut — falls back to a ⌘C, as described in
+[quick-actions.md](quick-actions.md#reading-the-selection). Keyword expansion never sends one: a typed
+keyword leaves nothing selected.
+
 Snippet references are case-insensitive. Duplicate names or keywords resolve deterministically by
 file-path identity. Nested references support five levels, detect cycles by file identity, and leave
 the original reference token visible when a target is missing, cyclic, or beyond the depth limit.
@@ -156,6 +178,10 @@ Every enabled snippet appears in launcher search while the pane's "Show in launc
 Its name and keyword are both searchable, scored in the same tiers as an app's name so a snippet ranks
 above an app only when it genuinely matches better. Launcher expansion may interactively request
 Accessibility because it begins from an explicit user action.
+
+`Search Snippets` and `Create Snippet` are launcher commands of their own, and either switch takes
+them out with the rows: "Show in launcher" off means the feature reaches launcher search not at all.
+The browser stays reachable by its global shortcut, and the editor from the pane.
 
 Automatic keyword expansion comes with the feature switch: enabling snippets in
 **Settings → Snippets** first shows an explanation, then stores the flag and requests Accessibility if
@@ -182,14 +208,82 @@ or session changes, Secure Event Input, navigation and modifier shortcuts, and 1
 inactivity. It is capped at 256 characters. Keywords are matched case-insensitively by longest suffix;
 duplicates resolve by file identity. Tinycast-tagged synthetic events are ignored.
 
+A match is delivered on a later main-actor turn, never inside the tap callback, so the triggering
+keystroke reaches the target before the argument dialog can take focus. The target is still
+sampled with the keystroke. Further real input or `stop()` cancels a match that has not run yet.
+
 Immediately before deleting a matched keyword and before inserting its expansion, automatic delivery
-re-checks consent, both permissions, Secure Event Input, the captured target app, and cancellation
-generation. A failed gate leaves the typed keyword untouched.
+re-checks consent, both permissions, Secure Event Input, the captured target, and cancellation
+generation. A failed gate leaves the typed keyword untouched. Delivery into one of our own editors
+gates on consent and the generation alone: there is nothing to grant, activate or post.
+
+## Search Snippets
+
+`PaletteMode.snippets` is a dedicated browser, reached by the `Search Snippets` command or by the
+global shortcut recorded in **Settings → Snippets**. Like Search Quicklinks it stays out of the Tab
+cycle and exits with Escape or a bare backspace, and like the clipboard it splits into a list and a
+preview.
+
+The list is every **enabled** snippet — a disabled one is absent here exactly as it is absent from the
+launcher — filtered by name *or* keyword. Substring matching, not the launcher's fuzzy scorer: this is
+a library being browsed rather than a query racing apps and commands for a rank.
+
+The preview shows the **raw template**, never an expansion. Expanding per selection would capture the
+clipboard, read the target's selected text and burn a `{uuid}` on every arrow key, and a snippet
+carrying `{argument}` would raise its prompt just to draw a pane. Beside it sits the name, keyword,
+shortcut, file name and character count.
+
+↵ and the ⌘K menu's **Paste Snippet** both go through `SnippetCoordinator.expandSnippetFromPalette`,
+which reads `previousApp` before hiding the panel and then calls the same `expandSnippet` funnel a
+launcher row does — so template expansion, cursor placement, the Accessibility prompt, the
+confirmation HUD and the pasteboard lease are the ones described below, not a second copy of them.
+The rest of the menu is **Edit Snippet** (⌘E) and **Create Snippet** (⌘N), which open the launcher
+editor, **Show in Finder** (⌘↵), and **Delete Snippet** (⌃X), separated at the bottom in red. Deletion
+always confirms before removing the snippet file and reports a failure without losing the record.
+These shortcuts also work with the menu closed; ⌘N works even when the browser has no rows.
+
+`Create Snippet` is a launcher command as well as a menu row because the palette swallows ⌘K when a
+screen has no rows: an empty library would otherwise open a browser with nothing to do.
+
+## Launcher editor
+
+`SnippetCoordinator` owns a `SnippetEditorSession`, presented by `SnippetEditorScreen` in
+`PaletteMode.snippetEditor`. **Create Snippet**, **Edit Snippet** (⌘E) in the browser or root search,
+and the settings library's **New Snippet** and **Edit** buttons open this same editor; Settings has no
+second editor. The **Create Snippet** command alone — from the launcher, a hotkey or a link — starts
+from the text selected in the app in front, read through `AccessibilityText.selection(in:)` and never
+by sending ⌘C; the browser's ⌘N and Settings start empty. The fields stay inside `Features/Snippets/UI/`, not in the palette shell or the extension form.
+
+The template is on the left, with its own **Insert…** placeholder menu, separate from Actions.
+It uses the palette's searchable popup, keeping its existing placeholder groups.
+**Name**, **Keyword**, **Enabled** and **Show confirmation** are on the right. The draft keeps the
+loaded record and its source revision; no file is created or changed before **Save Snippet**.
+The template grows with its text; only the whole form scrolls, never an individual field or column.
+A blank name disables Save.
+An IO or revision failure leaves the draft open and shows the error beside its fields.
+
+**⌘↵** saves; plain **↵** inserts a template line break. **Tab** and **Shift-Tab** walk the fields,
+**⌥Tab** types a tab character, and **Escape** cancels and returns to the previous launcher screen, or closes a directly summoned
+editor. Saving also returns to the previous screen. No snippet expansion or paste is part of editing.
+
+## Shortcuts
+
+Each snippet can hold a global shortcut, recorded on its row in **Settings → Snippets**, and shown
+as keycaps on its launcher and browser rows. `SnippetCoordinator.expandSnippetFromHotKey` refuses
+while the feature or the snippet is off, then calls the same `expandSnippet` funnel a launcher row
+does. Its target is `InjectionTarget.current()`, or what the palette covered while the palette is
+open. A window of ours that is not an editor resolves no target — Settings, straight after recording
+the shortcut — so the press shows a HUD asking for a text field rather than doing nothing.
+
+**The shortcut's own modifiers are still held when delivery starts.** A keyboard event built from
+`.combinedSessionState` inherits them, so a Unicode keystroke clears its flags like every other
+synthetic event, or ⌥⇧V would type each character as an ⌥⇧ chord. Persistence and the sweep of
+deleted files are in [hotkeys.md](hotkeys.md#persistence).
 
 ## Confirmation HUD
 
 The confirmation is per snippet and off by default: the only gate is `show_confirmation: true`, set
-from the snippet's editor in **Settings → Snippets**. Nothing about it reaches settings backups.
+from the launcher editor. Nothing about it reaches settings backups.
 The feature switch — which carries keyword-monitoring consent — is likewise excluded from backups.
 
 `MessageHUDController` is shared rather than snippet-specific. It takes a message and a `DialogTone`
@@ -207,25 +301,83 @@ not report completion and therefore cannot show it.
 
 ## Text delivery and pasteboard safety
 
-The preferred path is one atomic Accessibility replacement. Tinycast requires a focused element with
-readable text plus writable selected-range and selected-text attributes. For an automatic expansion it
-also verifies that the exact captured keyword is immediately before the cursor before replacing it.
-An Accessibility mismatch is rejected rather than guessed.
+There are two delivery tiers, and the target picks which one runs.
 
-Some editors grant Accessibility but do not expose writable text attributes. In that case Tinycast
-falls back to tagged keyboard events while keeping the same permission, consent, Secure Event Input,
-target-app and cancellation gates. The fallback deletes the keyword first, waits for deletion to
-settle, then inserts the expansion. Short single-line expansions of at most 100 characters use Unicode
-keyboard events.
+`InjectionTarget.ownEditor` is one of our own views — `NoteTextView` and AI Chat's
+`ComposerTextView`, which opt in by adopting `InjectableTextView`. It is written in process with
+`insertText(_:replacementRange:)`:
+undoable in the editor's own `UndoManager`, and needing no Accessibility grant, no pasteboard lease,
+no app activation and no event posting. Rules 1, 3 and 4 below do not apply — our own storage is
+authoritative, so there is nothing to sniff for and nothing to read back.
 
-Longer or multiline fallback text uses a temporary paste only when the existing pasteboard's first
-item has plain text that can be restored without another pasteboard write. Tinycast snapshots every
-item, type and data payload, takes temporary ownership with the same item shape, and changes only the
-first plain-text payload. Restoration mutates that owned item back in place; it never clears the
-clipboard before a fallible restore. The pasteboard change count is checked before restoration, so a
-newer copy is never overwritten. Empty, image-first, unreadable or otherwise unsafe pasteboards use
-the Unicode-event fallback instead. The clipboard poller synchronizes to Tinycast's ownership changes
-so temporary or restored text is not added as new history.
+**Rule 2 applies to it more sharply than to any renderer.** The tap is `headInsertEventTap`, so it
+fires *before* AppKit delivers the keystroke to our own view: the first look is always one character
+stale. `.pending` only covers a document shorter than the keyword; with anything typed before it, the
+same staleness reads as `.rejected` and fails closed. So this tier **leads with the wait** — it sleeps
+one convergence interval before it inspects at all, then polls on the shared budget. In practice the
+keyword has landed after a single 5 ms pass.
+
+`InjectionTarget.external` is another application, and it takes the contract below, in this order,
+where every clause is a rule in it.
+
+1. The focused element exposes `AXSelectedTextMarkerRange` → a renderer surface. Skip Accessibility.
+2. The keyword is not at the caret yet → wait, up to 40 ms. Never arrives → events. Wrong → refuse.
+3. Write over Accessibility, read the value back. Matches → done. Unchanged → events. Moved some
+   other way → refuse.
+4. Events: delete the keyword, then paste (long or multiline) or type in four-unit keystrokes.
+5. Nothing landed → say so.
+
+**Rule 1: a renderer's Accessibility surface is not authoritative.** Chromium and Monaco publish
+selection as opaque text markers, and their `AXValue` either trails the editor by a few milliseconds
+or — in VSCodium — stays empty and caret-zero indefinitely while the real editor holds the text. A
+marker range is the reliable tell, so those targets never take the Accessibility write at all.
+`accessibilityTextState` skips them for the same reason: a value that never moves cannot confirm a
+paste either.
+
+**Rule 2: too little text is not the same as the wrong text.** `TextReplacementPolicy`
+`.pending` means the value is shorter than the keyword — the renderer has not caught up — and is
+retried for up to eight 5 ms passes. `.rejected` means there was enough text and it was not the
+keyword, which is a genuine mismatch and stops delivery. Only an automatic expansion waits; an
+interactive one has no keyword race to lose. The convergence window is why an empty Monaco snapshot
+falls through to events instead of reading as a mismatch.
+
+**Rule 3: a `kAXErrorSuccess` from the setter is not evidence.** Chromium answers success and applies
+nothing. `confirmsReplacement` rebuilds the exact string the write should have produced and compares
+it to what the element reports. An unchanged value is `.unavailable`, so the event tiers still get
+their turn instead of an "applied" message over untouched text; a value that changed into something
+we did not write is `.rejected`, because events would then edit a document we can no longer describe.
+
+**Rule 4** keeps the same permission, consent, Secure Event Input, target-app and cancellation gates.
+The fallback deletes the keyword first, waits for deletion to settle, then inserts the expansion.
+Short single-line expansions of at most 100 characters use Unicode keyboard events.
+
+**A Unicode keystroke carries at most four UTF-16 units.** Blink stores one key event's text in a
+fixed `WebKeyboardEvent::kTextLengthCap` array, so a Chromium target — Brave, Chrome, Electron, VS
+Code, Slack — silently drops everything past the fourth unit of a single event. `UnicodeTypingChunk`
+splits the text into four-unit keystrokes on scalar boundaries, because a lone surrogate half is not
+text and a scalar never exceeds four units on its own. The chunks post through the same spaced,
+re-gated loop the deletions use, so a target that goes away mid-word stops the rest.
+
+Longer or multiline fallback text uses a temporary paste. Tinycast snapshots every item, type and data
+payload, then **lends a board holding nothing but the expansion** — one item carrying the plain text
+and Tinycast's own marker type — and restores by rewriting the snapshot whole.
+
+**The loan carries no other flavour of the old clipboard.** Keeping the original item's shape and
+swapping only its `.string` would leave `public.html`, `public.rtf` and the rest describing the
+*previous* copy, and a rich-text editor prefers those: ChatGPT's ProseMirror composer takes Chromium's
+`text/html` over its `text/plain`, so a snippet pasted over an HTML-bearing clipboard inserted the
+previous copy instead. A representation Tinycast cannot rewrite to mean the expansion is one it must
+not lend, and the whitelist of text-bearing UTIs it *could* rewrite would never be complete. Rewriting
+the snapshot therefore clears before a fallible write — the risk a same-shape loan bought off — which
+is the trade a correct paste is worth, and the items are built from the in-memory snapshot before the
+clear so the write has nothing left to fail on.
+
+An empty or image-only clipboard lends the same single item; declining the loan there would have sent
+a long multiline expansion down the keystroke path a character at a time. The pasteboard change count
+is checked before restoration, so a newer copy is never overwritten, and the clipboard poller
+synchronizes to Tinycast's ownership changes so temporary or restored text is not added as new history.
+Because the marker type lives only on the lent item, a restored clipboard carries none of it, and the
+poller keeps seeing the user's own copy.
 
 When Accessibility text state is readable, a long paste waits for evidence that the target changed.
 If the editor cannot expose post-paste text state, a successfully posted paste is accepted only after
@@ -235,6 +387,17 @@ once only after the Accessibility replacement or event fallback (including reque
 finishes successfully. Disabling automatic expansion or
 terminating the app cancels pending delivery and deferred cursor movement; termination also completes
 any pasteboard restoration still owned by Tinycast.
+
+**Rule 5, and the keystroke that outruns it.** An automatic expansion is speculative, so the reader's
+next real keystroke or click cancels whatever is still in flight — the listener reports every
+non-ignored input to `cancelAutomaticExpansion`, and Tinycast's own tagged synthetic events classify
+as `.ignored`, so a fallback never cancels itself. The argument prompt is the one exception: while
+`isPromptingForArguments` is set, the listener neither matches nor reports activity, because typing
+into the prompt and clicking **Expand** is the reader finishing the expansion, not abandoning it.
+The flag clears the buffer on both edges, so argument text can never trigger a nested expansion.
+Delivery then settles exactly once either way:
+Quick Actions raise a HUD and keep the reply on the clipboard, while snippets pass no failure handler
+and stay as silent as before, because a speculative expansion that declined is not news.
 
 ## External edits and conflicts
 
@@ -261,3 +424,24 @@ main-actor watcher against temporary roots:
 ```sh
 ./Scripts/run-tests.sh snippets-test
 ```
+
+The delivery contract's two judgements — `keywordState` and `confirmsReplacement` — are pure, so the
+harness drives renderer lag, a genuine mismatch, an empty editor snapshot, a false-success setter and
+a write that landed elsewhere without an editor in the room. The tiers themselves are not: which rule
+a given app takes is a manual check.
+
+### Manual sweep
+
+- Create from the launcher and from **Settings → Snippets → New Snippet**: the same launcher form opens.
+- Enter a multiline template, tab through its existing options and insert a placeholder: plain Return
+  stays in the template, while **⌘↵** saves only after a name is entered.
+- Edit from a filtered snippet list, then save or cancel: its search and selection are restored.
+- Cancel a new draft: no file appears. Change an edited file externally: Save reports a conflict and
+  keeps the draft, without overwriting the external edit.
+- Type a keyword in the **ChatGPT composer inside a Chromium browser**: it expands. This is rule 1 and
+  rule 4 together — the composer is skipped over Accessibility and typed into in four-unit keystrokes.
+- Type one in a **VSCodium editor pane**: it expands, where the Accessibility value stays empty.
+- Type one in **Notes or Mail**: still the atomic Accessibility replacement, not events.
+- Type a keyword, then keep typing before the expansion lands: the expansion is abandoned rather than
+  landing mid-word.
+- Type a keyword whose text the app changed underneath it: refused, with the keyword left alone.

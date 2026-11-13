@@ -9,7 +9,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        AppCore.shared.start()
+        AppCore.shared.start(launchedByUser: isUserLaunch)
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            AppCore.shared.handleOpenURL(url)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -18,9 +24,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // The Dock icon only stands for the open windows, so its Quit closes them, not the agent.
+        let activation = AppCore.shared.activationPolicy
+        if isQuitFromDock, activation.hasOpenWindows {
+            activation.closeAll()
+            return .terminateCancel
+        }
         guard !terminationRequestInFlight else { return .terminateLater }
         terminationRequestInFlight = true
         Task { @MainActor [weak self] in
+            await AppCore.shared.stopDictationForTermination()
             // A 300 ms-debounced draft still has to reach disk, but it can no longer veto the quit.
             await AppCore.shared.flushNotesForTermination()
             self?.terminationRequestInFlight = false
@@ -37,5 +50,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The palette and Settings each close on their own; the agent outlives both.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    /// ⌘Q and the menu-bar item call `terminate` directly; only an Apple Event names a sender.
+    private var isQuitFromDock: Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+            event.eventClass == kCoreEventClass, event.eventID == kAEQuitApplication,
+            let pid = event.attributeDescriptor(forKeyword: keySenderPIDAttr)?.int32Value
+        else { return false }
+        return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.apple.dock"
+    }
+
+    /// Only a plain open counts; a login item or a URL open launches with nothing to show.
+    private var isUserLaunch: Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+            event.eventClass == kCoreEventClass, event.eventID == kAEOpenApplication
+        else { return false }
+        return event.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue
+            != keyAELaunchedAsLogInItem
     }
 }

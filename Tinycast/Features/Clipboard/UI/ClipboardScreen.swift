@@ -1,16 +1,23 @@
 import SwiftUI
 
-/// The clipboard browser: a filtered list beside a preview of whichever entry is selected.
 struct ClipboardScreen: PaletteScreen {
     let store: ClipboardStore
     let core: AppCore
     let vm: PaletteState
+
+    private var metrics: InterfaceMetrics { core.settings.interfaceSize.metrics }
     let openActions: () -> Void
     let scrollToFollow: () -> Void
 
     var rows: [ClipboardItem] { store.search(vm.query, filter: vm.clipboardFilter) }
 
-    var primaryActionTitle: String { vm.pasteTarget?.pasteTitle ?? "Paste" }
+    var landingSelection: Int { store.landingIndex(in: vm.query, filter: vm.clipboardFilter) }
+
+    var primaryActionTitle: String {
+        let defaultAction = core.settings.clipboardDefaultAction
+        let action = item(at: vm.selection).flatMap { defaultAction.action(for: .return, on: $0) }
+        return (action ?? defaultAction).title(pastingInto: vm.pasteTarget)
+    }
 
     private func item(at selection: Int) -> ClipboardItem? {
         let rows = rows
@@ -25,14 +32,53 @@ struct ClipboardScreen: PaletteScreen {
 
     func activate(at selection: Int) {
         guard let item = item(at: selection) else { return }
-        core.clipboardCoordinator.paste(item)
+        core.clipboardCoordinator.activate(item)
     }
 
-    /// ⌘↵ — copy without pasting, leaving the frontmost app's own clipboard use alone.
+    func perform(_ shortcut: PaletteShortcut, at selection: Int) -> Bool {
+        switch shortcut {
+        case .commandDelete, .delete:
+            delete(at: selection)
+            return true
+        case .deleteAll:
+            deleteAll()
+            return true
+        case .pin: return pin(at: selection)
+        case .favoriteSlot(let index): return activatePinned(at: index)
+        case .copyText:
+            guard let item = item(at: selection), item.offersTextExtraction else { return false }
+            core.clipboardCoordinator.copyImageText(item)
+            return true
+        case .showInFinder:
+            guard let item = item(at: selection), item.kind != .text else { return false }
+            core.clipboardCoordinator.revealClip(item)
+            return true
+        case .edit:
+            guard let item = item(at: selection), item.kind == .text else { return false }
+            Task { await core.clipboardCoordinator.editClip(item) }
+            return true
+        default: return false
+        }
+    }
+
+    private func activatePinned(at index: Int) -> Bool {
+        guard let item = store.pinnedItem(at: index, in: vm.query, filter: vm.clipboardFilter) else {
+            return false
+        }
+        core.clipboardCoordinator.activate(item)
+        return true
+    }
+
+    /// ⌘↵ — the action ↵ is not set to.
     func secondary(at selection: Int) -> Bool {
         guard let item = item(at: selection) else { return false }
-        core.clipboardCoordinator.copyToClipboard(item)
-        return true
+        return core.clipboardCoordinator.activate(item, chord: .command)
+    }
+
+    /// ⌃⌘↵ — Paste as Plain Text, or Paste while that is the default.
+    func tertiary(at selection: Int) -> Bool {
+        guard let item = item(at: selection) else { return false }
+        return core.clipboardCoordinator.activate(item, chord: .controlCommand)
     }
 
     /// ⌥↵ — the palette stays up, so a run of entries goes over without re-summoning it.
@@ -42,21 +88,20 @@ struct ClipboardScreen: PaletteScreen {
         return true
     }
 
-    /// ⌘. — mirrors the Actions menu row; pinning lifts the row into the Pinned section.
-    func pin(at selection: Int) -> Bool {
+    private func pin(at selection: Int) -> Bool {
         guard let item = item(at: selection) else { return false }
         core.clipboardCoordinator.togglePinnedClip(item)
         return true
     }
 
     /// ⌘⌫ / ⌃X — the screen owns the chord whether or not a row sits under the selection.
-    func delete(at selection: Int) {
+    private func delete(at selection: Int) {
         guard let item = item(at: selection) else { return }
         store.remove(item)
     }
 
     /// ⌃⇧X — mirrors the Actions row, confirmation included; pinned entries go with the rest.
-    func deleteAll() {
+    private func deleteAll() {
         Task { await core.clipboardCoordinator.deleteAllClips() }
     }
 
@@ -102,9 +147,11 @@ struct ClipboardScreen: PaletteScreen {
                     onActions: { item in
                         if let index = rows.firstIndex(of: item) { vm.selection = index }
                         openActions()
-                    }
+                    },
+                    onDragPayload: { core.clipboardCoordinator.dragPayload(for: $0) },
+                    onDropped: { core.paletteCoordinator.dragLanded() }
                 )
-                .frame(width: Theme.Size.clipboardListWidth)
+                .frame(width: metrics.size.clipboardListWidth)
                 Rectangle()
                     .fill(Theme.Colors.separator)
                     .frame(width: 1)
@@ -120,60 +167,100 @@ private struct ClipFollowKey: Equatable {
     let token: UUID
 }
 
-/// Actions menu for an entry, shown bottom-right on right-click like `AppActionsMenu`.
 @MainActor
 enum ClipboardActionsMenu {
     static func content(
         item: ClipboardItem, core: AppCore, store: ClipboardStore, target: PasteTarget?
     ) -> PopoverMenuContent {
-        var items: [PopoverMenuItem] = [
+        let defaultAction = core.settings.clipboardDefaultAction
+        // Chord order puts the default first, beside the ↵ it answers.
+        var items: [PopoverMenuItem] = ClipboardChord.allCases.compactMap { chord in
+            defaultAction.action(for: chord, on: item).map { action in
+                PopoverMenuItem(
+                    title: action.title(pastingInto: target), icon: icon(for: action, target: target),
+                    shortcut: chord.label
+                ) {
+                    core.clipboardCoordinator.perform(action, on: item)
+                }
+            }
+        }
+        items.append(
             PopoverMenuItem(
-                title: target?.pasteTitle ?? "Paste",
-                icon: .paste(target, fallback: "doc.on.clipboard"), shortcut: "↵"
-            ) {
-                core.clipboardCoordinator.paste(item)
-            },
-            PopoverMenuItem(title: "Copy to Clipboard", systemImage: "doc.on.doc", shortcut: "⌘↵") {
-                core.clipboardCoordinator.copyToClipboard(item)
-            },
-            PopoverMenuItem(
-                title: "Paste and Keep Window Open", icon: .paste(target, fallback: "macwindow"),
+                title: String(localized: "Paste and Keep Window Open"),
+                icon: .paste(target, fallback: "macwindow"),
                 shortcut: "⌥↵"
             ) {
                 core.clipboardCoordinator.pasteKeepingWindowOpen(item)
-            }
-        ]
-        if item.isPinned {
+            })
+        if item.kind == .text {
             items.append(
-                PopoverMenuItem(title: "Unpin Entry", systemImage: "pin.slash", shortcut: "⌘.") {
-                    core.clipboardCoordinator.togglePinnedClip(item)
-                })
-        } else {
-            items.append(
-                PopoverMenuItem(title: "Pin Entry", systemImage: "pin", shortcut: "⌘.") {
-                    core.clipboardCoordinator.togglePinnedClip(item)
-                })
-        }
-        if item.kind == .image {
-            items.append(
-                PopoverMenuItem(title: "Show in Finder", systemImage: "folder") {
-                    core.clipboardCoordinator.revealClipboardImage(item)
+                PopoverMenuItem(
+                    title: String(localized: "Edit Entry"), systemImage: "pencil", startsSection: true,
+                    shortcut: "⌘E"
+                ) {
+                    Task { await core.clipboardCoordinator.editClip(item) }
                 })
         }
         items.append(
             PopoverMenuItem(
-                title: "Delete Entry", systemImage: "trash", shortcut: "⌃X", isDestructive: true
+                title: item.isPinned ? String(localized: "Unpin Entry") : String(localized: "Pin Entry"),
+                systemImage: item.isPinned ? "pin.slash" : "pin", startsSection: item.kind != .text,
+                shortcut: "⌘."
+            ) {
+                core.clipboardCoordinator.togglePinnedClip(item)
+            })
+        if item.offersTextExtraction {
+            items.append(
+                PopoverMenuItem(
+                    title: String(localized: "Copy Text"), systemImage: "doc.text.viewfinder",
+                    shortcut: "⇧⌘T"
+                ) {
+                    core.clipboardCoordinator.copyImageText(item)
+                })
+        }
+        if item.kind != .text {
+            items.append(
+                PopoverMenuItem(
+                    title: String(localized: "Show in Finder"), systemImage: "folder", shortcut: "⌘F"
+                ) {
+                    core.clipboardCoordinator.revealClip(item)
+                })
+        }
+        if item.kind == .file {
+            items.append(
+                PopoverMenuItem(title: String(localized: "Open"), systemImage: "arrow.up.forward.app") {
+                    core.clipboardCoordinator.openClip(item)
+                })
+            items.append(
+                PopoverMenuItem(title: String(localized: "Copy Path"), systemImage: "doc.on.clipboard") {
+                    core.clipboardCoordinator.copyClipPath(item)
+                })
+        }
+        items.append(
+            PopoverMenuItem(
+                title: String(localized: "Delete Entry"), systemImage: "trash", startsSection: true,
+                shortcut: "⌃X", isDestructive: true
             ) {
                 store.remove(item)
             })
         items.append(
             PopoverMenuItem(
-                title: "Delete All Entries", systemImage: "trash", shortcut: "⌃⇧X",
+                title: String(localized: "Delete All Entries"), systemImage: "trash", shortcut: "⌃⇧X",
                 isDestructive: true
             ) {
                 Task { await core.clipboardCoordinator.deleteAllClips() }
             })
         return PopoverMenuContent(header: headerText(item), items: items)
+    }
+
+    private static func icon(
+        for action: ClipboardDefaultAction, target: PasteTarget?
+    ) -> PopoverMenuIcon {
+        switch action {
+        case .paste: .paste(target, fallback: "doc.on.clipboard")
+        case .copy: .symbol("doc.on.doc")
+        case .pastePlainText: .paste(target, fallback: "doc.plaintext")
+        }
     }
 
     private static func headerText(_ item: ClipboardItem) -> String {
@@ -183,7 +270,19 @@ enum ClipboardActionsMenu {
             let oneLine = (item.text ?? "").split(whereSeparator: \.isWhitespace).joined(
                 separator: " ")
             return String(oneLine.prefix(40))
-        case .image: return "Image"
+        case .image: return String(localized: "Image")
+        case .file: return (item.filePath as NSString?)?.lastPathComponent ?? String(localized: "File")
+        }
+    }
+}
+
+extension ClipboardDefaultAction {
+    func title(pastingInto target: PasteTarget?) -> String {
+        guard let target else { return title }
+        switch self {
+        case .paste: return String(localized: "Paste to \(target.name)")
+        case .copy: return title
+        case .pastePlainText: return String(localized: "Paste as Plain Text to \(target.name)")
         }
     }
 }

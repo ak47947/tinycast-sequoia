@@ -1,9 +1,10 @@
 import Foundation
 
-/// An installed extension: its manifest plus where it lives on disk.
 struct InstalledExtension: Sendable, Hashable, Identifiable {
     let manifest: ExtensionManifest
     let directory: URL
+    /// Read by `scan`, off the main actor, so publishing launcher rows never touches the disk.
+    var installedAt: Date?
 
     var id: String { manifest.name }
     var title: String { manifest.title }
@@ -20,7 +21,6 @@ struct InstalledExtension: Sendable, Hashable, Identifiable {
 
     var assetsPath: String { directory.appendingPathComponent("assets").path }
 
-    /// The prebuilt CommonJS bundle for a command, or nil when the install is incomplete.
     func bundleURL(for command: ExtensionCommand) -> URL? {
         let url = directory.appendingPathComponent("\(command.name).js")
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
@@ -31,7 +31,6 @@ struct InstalledExtension: Sendable, Hashable, Identifiable {
     }
 }
 
-/// A specific command of a specific extension — what the launcher activates.
 struct ExtensionCommandRef: Sendable, Hashable {
     let extensionName: String
     let commandName: String
@@ -64,6 +63,16 @@ enum ExtensionCatalog {
         supportDirectory().appendingPathComponent("extension-data", isDirectory: true)
     }
 
+    /// Outside `extension-data`, whose every file the cleanup sweep reads as one extension's own.
+    static func commandMetadataFile() -> URL {
+        supportDirectory().appendingPathComponent("extension-commands.json", isDirectory: false)
+    }
+
+    /// Outside the directories the cleanup sweep reads, like `commandMetadataFile`.
+    static func storeVersionsFile() -> URL {
+        supportDirectory().appendingPathComponent("extension-versions.json", isDirectory: false)
+    }
+
     /// Per-extension `environment.supportPath` — an extension's own scratch directory.
     static func supportPath(for name: String) -> URL {
         supportRoot().appendingPathComponent(safeName(name), isDirectory: true)
@@ -94,7 +103,7 @@ enum ExtensionCatalog {
         }
     }
 
-    /// The first root holding anything, so the other channel's empty one never reads as "not installed".
+    /// The first root holding anything, so an empty channel never reads as not installed.
     static func raycastExtensionsDirectory() -> URL? {
         raycastExtensionRoots().first { root in
             let entries = try? FileManager.default.contentsOfDirectory(
@@ -108,17 +117,58 @@ enum ExtensionCatalog {
         let root = extensionsDirectory()
         let entries =
             (try? FileManager.default.contentsOfDirectory(
-                at: root, includingPropertiesForKeys: [.isDirectoryKey],
+                at: root, includingPropertiesForKeys: [.isDirectoryKey, .addedToDirectoryDateKey],
                 options: [.skipsHiddenFiles])) ?? []
         return
             entries
             .compactMap { directory -> InstalledExtension? in
+                try? restoreExecutablePermissions(in: directory)
                 guard let manifest = try? ExtensionManifest.load(directory: directory),
                     manifest.supportsMacOS
                 else { return nil }
-                return InstalledExtension(manifest: manifest, directory: directory)
+                let added = try? directory.resourceValues(forKeys: [.addedToDirectoryDateKey])
+                return InstalledExtension(
+                    manifest: manifest, directory: directory, installedAt: added?.addedToDirectoryDate)
             }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    /// GitHub's raw-file downloads lose mode bits, so restore runnable helper assets by content.
+    nonisolated static func restoreExecutablePermissions(in directory: URL) throws {
+        let fileManager = FileManager.default
+        let assets = directory.appendingPathComponent("assets", isDirectory: true)
+        guard
+            let enumerator = fileManager.enumerator(
+                at: assets,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles])
+        else { return }
+
+        while let file = enumerator.nextObject() as? URL {
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true,
+                !fileManager.isExecutableFile(atPath: file.path), isExecutablePayload(file)
+            else { continue }
+            let attributes = try fileManager.attributesOfItem(atPath: file.path)
+            let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0o644
+            let executeBits = (permissions & 0o444) >> 2
+            try fileManager.setAttributes(
+                [.posixPermissions: permissions | executeBits], ofItemAtPath: file.path)
+        }
+    }
+
+    private nonisolated static func isExecutablePayload(_ file: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return false }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 4) else { return false }
+        let bytes = Array(data)
+        if bytes.starts(with: [0x23, 0x21]) { return true }
+        return [
+            [0xCA, 0xFE, 0xBA, 0xBE], [0xBE, 0xBA, 0xFE, 0xCA],
+            [0xCA, 0xFE, 0xBA, 0xBF], [0xBF, 0xBA, 0xFE, 0xCA],
+            [0xCE, 0xFA, 0xED, 0xFE], [0xCF, 0xFA, 0xED, 0xFE],
+            [0xFE, 0xED, 0xFA, 0xCE], [0xFE, 0xED, 0xFA, 0xCF]
+        ].contains(bytes)
     }
 
     // MARK: - Install
@@ -132,22 +182,30 @@ enum ExtensionCatalog {
         var errorDescription: String? {
             switch self {
             case .notAnExtension(let url):
-                return
-                    "\(url.lastPathComponent) doesn't contain a Raycast extension (no package.json with commands)."
+                return String(
+                    localized: """
+                        \(url.lastPathComponent) doesn't contain a Raycast extension (no package.json \
+                        with commands).
+                        """)
             case .noBuiltCommands(let name):
-                return
-                    "\(name) has no built command bundles. Tinycast installs prebuilt extensions — run `ray build` in the extension folder first, or import one from an installed Raycast."
+                return String(
+                    localized: """
+                        \(name) has no built command bundles. Tinycast installs prebuilt extensions — run \
+                        `ray build` in the extension folder first, or import one from an installed Raycast.
+                        """)
             case .wrongPlatform(let name):
-                return "\(name) doesn't support macOS."
+                return String(localized: "\(name) doesn't support macOS.")
             case .copyFailed(let reason):
-                return "Couldn't install the extension: \(reason)"
+                return String(localized: "Couldn't install the extension: \(reason)")
             }
         }
     }
 
-    /// Manifest, built commands and `assets/` only — never `node_modules` or the multi-MB `.js.map`s.
+    /// Manifest, built commands, `assets/` and any bundled `node_modules` — never `.js.map`s.
     @discardableResult
-    static func install(from source: URL) throws -> InstalledExtension {
+    static func install(
+        from source: URL, in directory: URL = ExtensionCatalog.extensionsDirectory()
+    ) throws -> InstalledExtension {
         guard let manifest = try? ExtensionManifest.load(directory: source) else {
             throw InstallError.notAnExtension(source)
         }
@@ -159,7 +217,7 @@ enum ExtensionCatalog {
         }
         guard !built.isEmpty else { throw InstallError.noBuiltCommands(manifest.title) }
 
-        let destination = extensionsDirectory().appendingPathComponent(
+        let destination = directory.appendingPathComponent(
             manifest.name.replacingOccurrences(of: "/", with: "-"), isDirectory: true)
         do {
             if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
@@ -177,6 +235,12 @@ enum ExtensionCatalog {
             if fm.fileExists(atPath: assets.path) {
                 try fm.copyItem(at: assets, to: destination.appendingPathComponent("assets"))
             }
+            let nodeModules = source.appendingPathComponent("node_modules")
+            if fm.fileExists(atPath: nodeModules.path) {
+                try fm.copyItem(
+                    at: nodeModules, to: destination.appendingPathComponent("node_modules"))
+            }
+            try restoreExecutablePermissions(in: destination)
         } catch {
             throw InstallError.copyFailed(error.localizedDescription)
         }
@@ -192,7 +256,7 @@ enum ExtensionCatalog {
         try FileManager.default.removeItem(at: installed.directory)
     }
 
-    /// Raycast keys installs by UUID, so the manifest is the only way to know what a directory holds.
+    /// Raycast keys installs by UUID, so only the manifest says what a directory holds.
     nonisolated static func importableFromRaycast() -> [InstalledExtension] {
         let fm = FileManager.default
         let entries = raycastExtensionRoots().flatMap { root in
@@ -211,7 +275,7 @@ enum ExtensionCatalog {
                 else { return nil }
                 return InstalledExtension(manifest: manifest, directory: directory)
             }
-            // Both channels can hold the same extension; the earlier root wins, so it is offered once.
+            // Both channels can hold one extension; the earlier root wins, so it is offered once.
             .reduce(into: [InstalledExtension]()) { unique, candidate in
                 guard !unique.contains(where: { $0.manifest.name == candidate.manifest.name }) else {
                     return

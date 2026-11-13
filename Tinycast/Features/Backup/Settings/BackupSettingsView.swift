@@ -9,7 +9,16 @@ struct BackupSettingsView: View {
     @State private var importing = false
     @State private var status: Status?
     @State private var selection: RaycastImportOptions = .all
-    @State private var format: RaycastFormat?
+    @State private var isRaycastExport = false
+    @State private var exportSelection = BackupCategory.all
+    @State private var importSelection: Set<BackupCategory> = []
+    @State private var exporting = false
+    @State private var importingBackup = false
+    @State private var backupStatus: Status?
+    @State private var backupFile: URL?
+    @State private var openedManifest: BackupManifest?
+    /// Held between opening the file and applying it, so the extracted tree survives the picker.
+    @State private var openedStaging: BackupStaging?
 
     private enum Status {
         case success(String)
@@ -20,66 +29,124 @@ struct BackupSettingsView: View {
         runningApps.runningBundleIDs.contains(where: BackupActions.isRaycastBundleID)
     }
 
+    /// Turning it on may ask first, so the switch follows the setting rather than the click.
+    private var settingsFileSync: Binding<Bool> {
+        Binding(
+            get: { core.settings.settingsFileEnabled },
+            set: { enabled in Task { await BackupActions.setSettingsFileEnabled(enabled, core: core) } })
+    }
+
     private var raycastFileSubtitle: String {
         guard let name = raycastFile?.lastPathComponent else {
-            return "Choose a .rayconfig file exported from Raycast."
+            return String(localized: "A .rayconfig file from Raycast 2.0 or later.")
         }
-        return "\(name) — \(format?.title ?? "not a Raycast export")"
+        return isRaycastExport
+            ? String(localized: "\(name) — Raycast export")
+            : String(localized: "\(name) — not a Raycast export")
     }
 
     var body: some View {
         Form {
             Section {
                 LabeledContent {
-                    Button("Export…") { Task { await BackupActions.exportSettings(core: core) } }
+                    if exporting {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("Export…") { runExport() }.disabled(exportSelection.isEmpty)
+                    }
                 } label: {
-                    Text("Export Settings")
-                    Text("Save your shortcuts, custom commands, favorites, and preferences to JSON.")
+                    SettingsRowTitle(.backupExport, "Export Backup")
+                    Text("The ticked items, as one .tinycast file.")
                 }
+                BackupCategorySelection(selection: $exportSelection)
+                if let backupStatus { statusRow(backupStatus) }
+            } header: {
+                SettingsSectionHeader(.backupExport)
+            }
+
+            Section {
                 LabeledContent {
-                    Button("Import…") { Task { await BackupActions.importSettings(core: core) } }
+                    Button("Choose…") { chooseBackupFile() }
                 } label: {
-                    Text("Import Settings")
-                    Text("Restore from a Tinycast backup. Only values in the file are changed.")
+                    SettingsRowTitle(.backupImport, "Backup File")
+                    Text(backupFileSubtitle)
+                }
+                if let manifest = openedManifest {
+                    BackupCategorySelection(
+                        selection: $importSelection, available: available(in: manifest))
+                    LabeledContent {
+                        if importingBackup {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button("Import") { runBackupImport() }
+                                .disabled(importSelection.isEmpty)
+                        }
+                    } label: {
+                        Text("Import")
+                    }
                 }
             } header: {
-                Text("Tinycast")
+                SettingsSectionHeader(.backupImport)
             }
 
             Section {
                 LabeledContent {
                     Button("Choose…") { chooseRaycastFile() }
                 } label: {
-                    Text("Raycast Export")
+                    SettingsRowTitle(.backupImportFromRaycast, "Raycast Export")
                     Text(raycastFileSubtitle)
                 }
                 LabeledContent {
-                    SecureField("Passphrase", text: $passphrase)
-                        .frame(width: 160)
-                        .onSubmit(runRaycastImport)
+                    RevealableSecureField(
+                        title: String(localized: "Passphrase"), text: $passphrase,
+                        prompt: Text("Export password")
+                    )
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    // LabeledContent right-aligns its value text, caret and all; a field reads left.
+                    .multilineTextAlignment(.leading)
+                    .frame(width: 160)
+                    .onSubmit(runRaycastImport)
                 } label: {
                     Text("Passphrase")
-                    Text("The password you set when exporting from Raycast.")
                 }
+                RaycastImportSelection(selection: $selection)
+                conflictNotice
                 LabeledContent {
                     if importing {
                         ProgressView().controlSize(.small)
                     } else {
                         Button("Import") { runRaycastImport() }
-                            .disabled(format == nil || passphrase.isEmpty || selection.isEmpty)
+                            .disabled(!isRaycastExport || passphrase.isEmpty || selection.isEmpty)
                     }
                 } label: {
                     Text("Import")
-                    Text("Choose what to bring over, then import.")
                 }
-                RaycastImportSelection(selection: $selection, format: format)
-                conflictNotice
                 if let status { statusRow(status) }
             } header: {
-                Text("Import from Raycast")
+                SettingsSectionHeader(.backupImportFromRaycast)
+            }
+
+            Section {
+                Toggle(isOn: settingsFileSync) {
+                    SettingsRowTitle(.backupSettingsFile, "Sync settings file")
+                    Text(BackupActions.settingsFilePath)
+                }
+                if core.settings.settingsFileEnabled {
+                    LabeledContent {
+                        Button("Show in Finder", action: BackupActions.revealSettingsFile)
+                    } label: {
+                        Text("Settings changed here are written to the file, and edits to it apply here.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                SettingsSectionHeader(.backupSettingsFile)
             }
         }
         .formStyle(.grouped)
+        .settingsScrollTarget(.backup)
+        .onDisappear { if !importingBackup { discardStagedBackup() } }
     }
 
     @ViewBuilder
@@ -96,7 +163,7 @@ struct BackupSettingsView: View {
             }
         } else {
             Label(
-                "Tip: unset the matching Raycast shortcuts to avoid conflicts.",
+                "Unset matching Raycast shortcuts to avoid conflicts.",
                 systemImage: "info.circle"
             )
             .foregroundStyle(.secondary)
@@ -115,15 +182,89 @@ struct BackupSettingsView: View {
         }
     }
 
+    private var backupFileSubtitle: String {
+        guard let name = backupFile?.lastPathComponent else {
+            return String(localized: "A .tinycast file exported from Tinycast.")
+        }
+        return openedManifest == nil ? String(localized: "\(name) — couldn't be read") : name
+    }
+
+    private func available(in manifest: BackupManifest) -> [BackupCategory: Int] {
+        Dictionary(
+            uniqueKeysWithValues: BackupCategory.ordered(manifest.categories).map {
+                ($0, manifest.count($0))
+            })
+    }
+
+    private func runExport() {
+        guard !exporting else { return }
+        exporting = true
+        backupStatus = nil
+        let categories = exportSelection
+        Task {
+            defer { exporting = false }
+            do {
+                let result = try await BackupActions.exportBackup(
+                    core: core, categories: categories)
+                backupStatus = .success(BackupActions.exportText(result))
+            } catch is CancellationError {
+                // The user closed the save panel; nothing to report.
+            } catch {
+                backupStatus = .failure(error.localizedDescription)
+            }
+        }
+    }
+
+    private func chooseBackupFile() {
+        guard let url = BackupActions.chooseBackupFile() else { return }
+        discardStagedBackup()
+        backupFile = url
+        backupStatus = nil
+        Task {
+            do {
+                let (staging, manifest) = try await BackupActions.openBackup(at: url)
+                openedStaging = staging
+                openedManifest = manifest
+                importSelection = manifest.categories
+            } catch {
+                backupStatus = .failure(error.localizedDescription)
+            }
+        }
+    }
+
+    private func runBackupImport() {
+        guard let staging = openedStaging, !importingBackup, !importSelection.isEmpty else {
+            return
+        }
+        importingBackup = true
+        let categories = importSelection
+        Task {
+            defer { importingBackup = false }
+            let summary = await BackupActions.applyBackup(
+                categories, from: staging, to: core)
+            // Staged files are adopted by the stores during apply, so the tree goes either way.
+            discardStagedBackup()
+            backupFile = nil
+            if let summary { backupStatus = .success(BackupActions.summaryText(summary)) }
+        }
+    }
+
+    /// The extracted tree can run to gigabytes, so leaving the pane must not strand it.
+    private func discardStagedBackup() {
+        openedStaging?.discard()
+        openedStaging = nil
+        openedManifest = nil
+    }
+
     private func chooseRaycastFile() {
         guard let url = BackupActions.pickRaycastFile() else { return }
         raycastFile = url
-        format = BackupActions.detectRaycastFormat(of: url)
+        isRaycastExport = BackupActions.isRaycastExport(url)
         status = nil
     }
 
     private func runRaycastImport() {
-        guard let file = raycastFile, format != nil, !passphrase.isEmpty, !selection.isEmpty,
+        guard let file = raycastFile, isRaycastExport, !passphrase.isEmpty, !selection.isEmpty,
             !importing
         else { return }
         importing = true
@@ -133,25 +274,7 @@ struct BackupSettingsView: View {
             do {
                 let outcome = try await BackupActions.importRaycast(
                     core: core, file: file, passphrase: passphrase, options: selection)
-                var parts: [String] = []
-                if let applied = BackupActions.appliedText(outcome.summary) { parts.append(applied) }
-                if outcome.clipboardImported > 0 {
-                    parts.append("Imported \(outcome.clipboardImported) clipboard entries.")
-                }
-                if outcome.snippetsImported > 0 {
-                    let noun = outcome.snippetsImported == 1 ? "snippet" : "snippets"
-                    parts.append("Imported \(outcome.snippetsImported) \(noun).")
-                }
-                if let snippetsError = outcome.snippetsError {
-                    parts.append("Couldn’t import snippets: \(snippetsError)")
-                }
-                var message =
-                    parts.isEmpty
-                    ? BackupActions.nothingImportedText : parts.joined(separator: " ")
-                if outcome.missingImages > 0 {
-                    message += " \(outcome.missingImages) images were unavailable and skipped."
-                }
-                status = .success(message)
+                status = .success(BackupActions.raycastText(outcome))
                 passphrase = ""
             } catch {
                 status = .failure(error.localizedDescription)

@@ -8,44 +8,37 @@ final class SettingsCoordinator {
     private unowned let core: AppCore
     /// The open window's session; the window's chrome and view tree own it, so this self-nils.
     private weak var navigation: SettingsNavigationState?
+    /// The same session owns its transient editor stack; no panel survives the Settings window.
+    private weak var editorPresenter: SettingsEditorPresenter?
 
     init(core: AppCore) {
         self.core = core
         window = AppWindowController(
-            title: "Settings", contentSize: Theme.Size.settingsWindow, resizable: true,
+            title: String(localized: "Settings"), contentSize: Theme.Size.settingsWindow, resizable: true,
             autosaveName: "SettingsWindow", activation: core.activationPolicy)
     }
 
     /// A fresh window mounts on `tab`; an open one navigates to it, recording the jump in history.
-    func showSettings(tab: SettingsTab = .general) {
+    /// A nil `tab` only reveals the window, so re-opening a minimised one keeps the pane it was on.
+    func showSettings(tab: SettingsTab? = nil, revealing target: SettingsTarget? = nil) {
         if window.focus() {
-            navigation?.select(tab)
+            if let tab { navigation?.select(tab, revealing: target) }
             return
         }
-        let navigation = SettingsNavigationState(tab: tab)
+        let navigation = SettingsNavigationState(tab: tab ?? .general)
+        navigation.select(navigation.tab, revealing: target)
+        let editorPresenter = SettingsEditorPresenter(core: core, navigation: navigation)
         self.navigation = navigation
-        window.show(chrome: SettingsToolbarController(navigation: navigation)) {
-            SettingsSplitViewController(
-                sidebar: inject(SettingsSidebarView(), navigation),
-                detail: inject(SettingsDetailView(), navigation))
-        }
-    }
-
-    /// Both columns are hosted separately, so each needs the whole environment.
-    private func inject(_ view: some View, _ navigation: SettingsNavigationState) -> some View {
-        view
-            .environment(navigation)
-            .environment(core)
-            .environment(core.settings)
-            .environment(core.appIndex)
-            .environment(core.hotKeys)
-            .environment(core.visibility)
-            .environment(core.aliases)
-            .environment(core.customCommands)
-            .environment(core.snippetsStore)
-            .environment(core.quicklinks)
-            // Propagates down so the window's materials show through, not each list's backing.
-            .scrollContentBackground(.hidden)
+        self.editorPresenter = editorPresenter
+        let hosting = NSHostingController(
+            rootView: SettingsRootView().settingsEnvironment(
+                core: core, navigation: navigation, editorPresenter: editorPresenter))
+        // Keep the window's size authoritative: an unconstrained fill would drive the frame.
+        hosting.sizingOptions = []
+        // The back/forward chevrons, the pane title and the sidebar's search field all ride on it.
+        hosting.sceneBridgingOptions = [.toolbars, .title]
+        window.show(chrome: SettingsWindowChrome()) { hosting }
+        editorPresenter.attach(to: hosting.view.window)
     }
 
     func showAbout() {
@@ -58,6 +51,7 @@ final class SettingsCoordinator {
 
     /// ⌘Q and the window's close button land here; the app itself keeps running.
     func closeSettings() {
+        editorPresenter?.dismissAll()
         window.close()
     }
 

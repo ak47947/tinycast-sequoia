@@ -1,28 +1,22 @@
 ---
 title: Install
-description: Homebrew, the release channels, and the one manual step a direct download needs.
+description: Homebrew, release channels, direct downloads, and updates.
 ---
 
-Tinycast needs **macOS 26 or later**. There is a separate cask for macOS 15 Sequoia — see
-[Older macOS](#older-macos).
+Tinycast needs an Apple silicon Mac with **macOS 26 or later**.
 
 ## Homebrew
 
-This is the recommended route, because Homebrew clears the macOS quarantine flag for you on every
-install and update.
+Homebrew is the easiest way to install Tinycast.
 
 ```bash
-brew trust --tap abue-ammar/tinycast
-brew install --cask abue-ammar/tinycast/tinycast
+brew install --cask tinycast
 ```
-
-`brew trust` is required once for any third-party tap; Homebrew refuses to install from an untrusted
-tap without it.
 
 ### Channels
 
-Each channel is a **separate application** with its own bundle identifier, settings, permissions and
-login item. They run side by side, so you can keep stable installed while trying a beta.
+Each channel is a **separate app** with its own settings, permissions and login item. They can run
+side by side, so you can keep the stable version and try a beta at the same time.
 
 | Channel | Cask            | App                 |
 | ------- | --------------- | ------------------- |
@@ -30,62 +24,52 @@ login item. They run side by side, so you can keep stable installed while trying
 | Beta    | `tinycast@beta` | `Tinycast Beta.app` |
 
 ```bash
-brew install --cask abue-ammar/tinycast/tinycast@beta
+brew install --cask tinycast@beta
 ```
 
-Because the channels are separate apps, installing the beta does not upgrade your stable install and
-does not share its settings. To move settings across, use
+The beta doesn't share settings with the stable version. To move your setup over, use
 [Backup](/docs/reference/backup).
 
-### Older macOS
+## Downloading directly
 
-Tinycast also runs on macOS 15 Sequoia through its own cask:
+Builds are also on the [Releases page](https://github.com/abue-ammar/tinycast/releases).
 
-```bash
-brew install --cask abue-ammar/tinycast/tinycast-sequoia
-```
-
-macOS 26 is the primary target and gets features first.
-
-## Downloading the DMG
-
-Builds are also published on the
-[Releases page](https://github.com/abue-ammar/tinycast/releases).
-
-Tinycast is **self-signed** — there is no paid Developer ID certificate behind it — so macOS
-quarantines a hand-downloaded copy and refuses to open it. Clear the flag once, after dragging the
-app to Applications:
-
-```bash
-xattr -dr com.apple.quarantine "/Applications/Tinycast.app"
-```
-
-You do **not** need this if you installed through Homebrew.
+Open the DMG and drag Tinycast to Applications. Every release is signed with Tinycast's Apple
+Developer ID and notarized by Apple, so macOS opens it without a warning.
 
 ## Updating
 
-```bash
-brew upgrade --cask abue-ammar/tinycast/tinycast
-```
+Tinycast updates itself. Once a day it checks for a new release on its own channel. When there is
+one, a window shows what changed. **Update Now** downloads and installs it, and **Relaunch** starts
+the new version. You can also check at any time with **Check for Updates** in the launcher, the menu
+bar or **Settings → About**.
 
-Every release is signed with the same certificate, which is what keeps your Accessibility grant
-alive across updates instead of asking for it again.
+To stop the daily check, turn off **Automatically check for updates** in **Settings → General**.
+Checking by hand still works.
+
+Because the app manages its own updates, `brew upgrade` skips Tinycast. This is expected. See
+[Updates](/docs/reference/updates) for details.
+
+Every release is signed with the same certificate, so your Accessibility permission keeps working
+after an update.
 
 ## Uninstalling
 
 ```bash
-brew uninstall --cask abue-ammar/tinycast/tinycast
+brew uninstall --cask tinycast
 ```
 
-To remove the files Tinycast created, delete its Application Support and Caches folders:
+To also remove the files Tinycast created, add `--zap`:
 
 ```bash
-rm -rf ~/Library/Application\ Support/com.tinycast.app
-rm -rf ~/Library/Caches/com.tinycast.app
+brew uninstall --zap --cask tinycast
 ```
 
-Your snippets, notes and quicklinks live in that Application Support folder, so copy anything you
-want to keep out first.
+That deletes your snippets, notes, quicklinks, clipboard history and AI chats too, so copy out
+anything you want to keep first. For the beta, use `tinycast@beta`.
 
-To remove a _different_ app and everything it left behind, Tinycast has a
+API keys you saved for AI providers or MCP servers, and extension sign-ins, are stored in your login
+Keychain. Remove them in Keychain Access if you want them gone too.
+
+To remove a _different_ app and the files it left behind, use Tinycast's
 [built-in uninstaller](/docs/launcher/uninstall).

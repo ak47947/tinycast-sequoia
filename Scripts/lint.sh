@@ -1,6 +1,5 @@
 #!/bin/bash
 # Lint the whole project. `--fix` auto-corrects the mechanical subset first.
-# Formatting is a separate tool with its own caveats — see ./Scripts/format.sh.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
@@ -11,10 +10,22 @@ command -v swiftlint >/dev/null || {
 
 [ "${1:-}" = "--fix" ] && swiftlint --fix --quiet
 
-# CI sets SWIFTLINT_REPORTER=github-actions-logging so violations land inline on the PR diff.
-if ! swiftlint lint --quiet ${SWIFTLINT_REPORTER:+--reporter "$SWIFTLINT_REPORTER"}; then
+if ! swiftlint lint --quiet; then
     echo
     echo "Lint errors above. Warnings do not block; errors do." >&2
     exit 1
 fi
+# An unclaimed settings anchor or unmarked row fails silently, and nothing else catches it.
+if ! node Scripts/check-settings-search.js; then
+    exit 1
+fi
+# An untranslated string still builds and runs, in English, inside a translated window.
+if ! node Scripts/check-localizations.js; then
+    exit 1
+fi
+# A migration that a stable release has shipped is dead code, and only this notices.
+if ! Scripts/check-migrations.sh; then
+    exit 1
+fi
+
 echo "✓ lint-clean"

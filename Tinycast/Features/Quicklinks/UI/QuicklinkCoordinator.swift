@@ -1,13 +1,13 @@
 import AppKit
 
-/// Owns the quicklink flow: the open funnel, the argument prompt, the library and import/export.
 @MainActor
+@Observable
 final class QuicklinkCoordinator {
+    private(set) var editor: QuicklinkEditorSession?
     private let store: QuicklinkStore
-    private let argumentSession: QuicklinkArgumentSession
     private let settings: AppSettings
     private let appIndex: AppIndex
-    private let injector: SnippetTextInjector
+    private let injector: TextInjector
     private let hotKeys: HotKeyManager
     private let favorites: FavoritesStore
     private let visibility: VisibilityStore
@@ -15,21 +15,19 @@ final class QuicklinkCoordinator {
     private let aliases: AliasStore
     private let windowController: PaletteWindowController
     private let paletteCoordinator: PaletteCoordinator
-    private let settingsCoordinator: SettingsCoordinator
     /// `{clipboard offset=N}` reads the history a snippet expansion does; one owner, one depth.
     private let clipboardHistory: @MainActor () -> [String]
-    /// Dialogs, the HUD, and the `pendingQuicklinkEdit` handoff to the Settings pane.
+    /// Dialogs and the HUD stay owned by the composition root.
     private unowned let core: AppCore
 
-    /// Carries the menu's default-app override across the quicklink argument prompt.
-    private var pendingQuicklinkForcesDefaultApp = false
+    /// The quicklink whose ⌘↵ override must survive the trip to the header's argument fields.
+    private var pendingDefaultAppOverride: UUID?
 
     init(
         store: QuicklinkStore,
-        argumentSession: QuicklinkArgumentSession,
         settings: AppSettings,
         appIndex: AppIndex,
-        injector: SnippetTextInjector,
+        injector: TextInjector,
         hotKeys: HotKeyManager,
         favorites: FavoritesStore,
         visibility: VisibilityStore,
@@ -37,12 +35,10 @@ final class QuicklinkCoordinator {
         aliases: AliasStore,
         windowController: PaletteWindowController,
         paletteCoordinator: PaletteCoordinator,
-        settingsCoordinator: SettingsCoordinator,
         clipboardHistory: @escaping @MainActor () -> [String],
         core: AppCore
     ) {
         self.store = store
-        self.argumentSession = argumentSession
         self.settings = settings
         self.appIndex = appIndex
         self.injector = injector
@@ -53,98 +49,177 @@ final class QuicklinkCoordinator {
         self.aliases = aliases
         self.windowController = windowController
         self.paletteCoordinator = paletteCoordinator
-        self.settingsCoordinator = settingsCoordinator
         self.clipboardHistory = clipboardHistory
         self.core = core
     }
 
     // MARK: - Feature presence
 
-    /// The switch moves section and commands together; "show in launcher" hides only the section.
+    /// Either switch off means the feature reaches the launcher not at all — rows and commands.
     func applyQuicklinksPresence() {
-        let enabled = settings.quicklinksEnabled
-        appIndex.setQuicklinks(
-            enabled && settings.quicklinksShowInLauncher ? store.quicklinks : [])
-        appIndex.setCommandsVisible(
-            [.createQuicklink, .searchQuicklinks, .importQuicklinks, .exportQuicklinks],
-            enabled)
+        if !settings.quicklinksEnabled, core.palette.mode == .quicklinkEditor {
+            cancelQuicklinkEditing()
+        }
+        let visible = settings.quicklinksEnabled && settings.quicklinksShowInLauncher
+        appIndex.setQuicklinks(visible ? store.quicklinks : [])
+        let commands: Set<CommandID> = [
+            .createQuicklink, .searchQuicklinks, .importQuicklinks, .exportQuicklinks
+        ]
+        appIndex.setCommandsVisible(commands, settings.quicklinksEnabled)
+        appIndex.setCommandsListed(commands, settings.quicklinksShowInLauncher)
     }
 
     // MARK: - Opening
 
-    /// The one funnel for every open, so neither the switch nor the prompt can be bypassed.
-    func openQuicklink(id: UUID, forcingDefaultApp: Bool = false) {
-        guard settings.quicklinksEnabled, let quicklink = store.quicklink(id: id) else {
-            return
+    /// `values` are the header's argument fields; anything missing sends the row back to them.
+    func openQuicklink(
+        id: UUID, forcingDefaultApp: Bool = false, values: [String: String] = [:]
+    ) {
+        guard let quicklink = openableQuicklink(id: id) else { return }
+        open(makeAttempt(quicklink, values: values, forcingDefaultApp: forcingDefaultApp))
+    }
+
+    /// The only entry that seeds an argument from the selection.
+    func openQuicklinkFromHotKey(id: UUID) {
+        guard let quicklink = openableQuicklink(id: id) else { return }
+        let attempt = makeAttempt(quicklink, values: [:], forcingDefaultApp: false)
+        guard let argument = selectedTextArgument(for: quicklink) else { return open(attempt) }
+        guard attempt.context.selection.isEmpty, let app = attempt.copySource else {
+            return open(attempt.filling(argument))
         }
-        // With the palette closed a shortcut still reads the selection from the frontmost app.
+        Task {
+            guard let copied = await copyingSelection(into: attempt, from: app) else { return }
+            open(copied.filling(argument))
+        }
+    }
+
+    /// The fallback row's query, which fills the first `{argument}` the link still owes.
+    func openQuicklink(id: UUID, filling seed: String) {
+        guard let quicklink = store.quicklink(id: id) else { return }
+        let arguments = SnippetTemplateEngine.declaredArguments(in: quicklink.link)
+        guard let target = arguments.first(where: { !$0.isOptional }) ?? arguments.first else {
+            return openQuicklink(id: id)
+        }
+        openQuicklink(id: id, values: [target.name: seed])
+    }
+
+    private func openableQuicklink(id: UUID) -> Quicklink? {
+        guard settings.quicklinksEnabled, let quicklink = store.quicklink(id: id),
+            quicklink.isEnabled
+        else { return nil }
+        return quicklink
+    }
+
+    private struct OpenAttempt {
+        var quicklink: Quicklink
+        var context: SnippetTemplateEngine.ExpansionContext
+        /// Where a ⌘C may still read the selection from; nil once one has been tried.
+        var copySource: NSRunningApplication?
+        var values: [String: String]
+        var forcingDefaultApp: Bool
+
+        func filling(_ argument: String) -> OpenAttempt {
+            let text = context.selection.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return self }
+            var attempt = self
+            attempt.values[argument] = text
+            return attempt
+        }
+    }
+
+    private func makeAttempt(
+        _ quicklink: Quicklink, values: [String: String], forcingDefaultApp: Bool
+    ) -> OpenAttempt {
+        // With the palette closed a shortcut still reads the selection from wherever the caret is.
         let target =
             windowController.isVisible
-            ? windowController.previousApp : NSWorkspace.shared.frontmostApplication
+            ? windowController.previousTarget : InjectionTarget.current()
+        return OpenAttempt(
+            quicklink: quicklink,
+            context: injector.captureExpansionContext(
+                target: target, clipboardHistory: clipboardHistory()),
+            copySource: target?.externalApp, values: values, forcingDefaultApp: forcingDefaultApp)
+    }
+
+    private func selectedTextArgument(for quicklink: Quicklink) -> String? {
+        guard settings.quicklinkPassesSelectedText,
+            let first = SnippetTemplateEngine.declaredArguments(in: quicklink.link).first,
+            first.options.isEmpty
+        else { return nil }
+        return first.name
+    }
+
+    /// Every open ends here, so neither missing values nor an empty selection can be bypassed.
+    private func open(_ attempt: OpenAttempt) {
+        var attempt = attempt
+        let quicklink = attempt.quicklink
         let encoding: SnippetTemplateEngine.ValueEncoding =
             QuicklinkDestination.usesURLEncoding(quicklink.link) ? .percentEncoding : .none
-        var context = injector.captureExpansionContext(
-            targetApp: target, clipboardHistory: clipboardHistory())
-        var arguments: [SnippetTemplateEngine.MissingArgument] = []
-
-        // An unreadable selection is missing, not empty: substitute the clipboard, or prompt.
-        if context.selection.isEmpty, SnippetTemplateEngine.usesSelection(quicklink.link) {
-            switch settings.quicklinkSelectionFallback {
-            case .clipboard:
-                context = context.replacingSelection(with: context.clipboard)
-            case .ask:
-                arguments.append(Self.selectionArgument)
-            }
-        }
-
+        // The override outlives the trip through the fields, so it is honoured on the way back.
+        attempt.forcingDefaultApp =
+            attempt.forcingDefaultApp || pendingDefaultAppOverride == quicklink.id
         let expansion = SnippetTemplateEngine.expand(
-            text: quicklink.link, context: context, encoding: encoding)
-        arguments += expansion.missingArguments
-        guard arguments.isEmpty else {
-            argumentSession.begin(
-                quicklink: quicklink, context: context, encoding: encoding, arguments: arguments)
-            pendingQuicklinkForcesDefaultApp = forcingDefaultApp
-            // Never `restoreAnyMode`: this screen is always a fresh prompt, never a restored one.
-            paletteCoordinator.showPalette(mode: .quicklinkArguments)
+            text: quicklink.link, context: attempt.context, userArguments: attempt.values,
+            encoding: encoding)
+        guard expansion.missingArguments.isEmpty else {
+            pendingDefaultAppOverride = attempt.forcingDefaultApp ? quicklink.id : nil
+            promptForArguments(quicklink, values: attempt.values)
             return
         }
-        performQuicklinkOpen(
-            quicklink, link: expansion.text, forcingDefaultApp: forcingDefaultApp)
-    }
-
-    /// `{selection}` promoted to an argument when unreadable and the setting says ask.
-    private static let selectionArgument = SnippetTemplateEngine.MissingArgument(
-        name: "Selected Text", options: [])
-
-    /// ↵ in the argument form. Returns false while more arguments remain.
-    @discardableResult
-    func submitQuicklinkArgument(_ value: String) -> Bool {
-        guard let request = argumentSession.request else { return false }
-        guard let values = argumentSession.submit(value) else { return false }
-
-        var context = request.context
-        if let selection = values[Self.selectionArgument.name] {
-            context = context.replacingSelection(with: selection)
+        pendingDefaultAppOverride = nil
+        guard expansion.readsSelection, attempt.context.selection.isEmpty else {
+            performQuicklinkOpen(
+                quicklink, link: expansion.text, forcingDefaultApp: attempt.forcingDefaultApp)
+            return
         }
-        let expansion = SnippetTemplateEngine.expand(
-            text: request.quicklink.link, context: context, userArguments: values,
-            encoding: request.encoding)
-        let forcesDefault = pendingQuicklinkForcesDefaultApp
-        cancelQuicklinkArguments()
-        performQuicklinkOpen(
-            request.quicklink, link: expansion.text, forcingDefaultApp: forcesDefault)
-        return true
+        // An empty `{selection}` fails rather than opening a search for nothing.
+        guard let app = attempt.copySource else { return reportMissingSelection() }
+        Task {
+            guard let copied = await copyingSelection(into: attempt, from: app) else { return }
+            open(copied)
+        }
     }
 
-    func cancelQuicklinkArguments() {
-        argumentSession.cancel()
-        pendingQuicklinkForcesDefaultApp = false
+    private func copyingSelection(
+        into attempt: OpenAttempt, from app: NSRunningApplication
+    ) async -> OpenAttempt? {
+        // The palette holds key, so the ⌘C would land in its own search field.
+        if windowController.isVisible { paletteCoordinator.hidePalette(restoreFocus: false) }
+        var attempt = attempt
+        attempt.context.selection = await injector.copySelection(from: app) ?? ""
+        attempt.copySource = nil
+        guard let quicklink = openableQuicklink(id: attempt.quicklink.id) else { return nil }
+        attempt.quicklink = quicklink
+        return attempt
+    }
+
+    private func reportMissingSelection() {
+        core.showMessage(
+            Permissions.isAccessibilityTrusted()
+                ? String(localized: "Couldn’t get the selected text")
+                : String(localized: "Allow Tinycast to use Accessibility in System Settings"),
+            tone: .danger)
+    }
+
+    /// Search Quicklinks is the one argument surface, so a shortcut missing values lands there.
+    private func promptForArguments(_ quicklink: Quicklink, values: [String: String]) {
+        paletteCoordinator.showPalette(mode: .quicklinks)
+        // After the show: `prepare` runs inside it and would clear everything set beforehand.
+        core.palette.selection = store.enabled.firstIndex(of: quicklink) ?? 0
+        for (name, value) in values {
+            core.palette.commandArguments[PaletteState.argumentKey(quicklink.entryID, name)] = value
+        }
+        core.palette.pendingArgumentEntryID = quicklink.entryID
     }
 
     private func performQuicklinkOpen(
         _ quicklink: Quicklink, link: String, forcingDefaultApp: Bool
     ) {
         if windowController.isVisible { paletteCoordinator.hidePalette(restoreFocus: false) }
+        // Tinycast's own link stays in-process: chosen here, so it never asks or steals focus.
+        if let url = URL(string: link), core.deepLinkCoordinator.handles(url) {
+            return core.deepLinkCoordinator.open(url, source: .tinycast)
+        }
         let openWith = forcingDefaultApp ? nil : quicklink.openWithBundleID
         Task {
             do throws(QuicklinkLauncher.Failure) {
@@ -163,7 +238,7 @@ final class QuicklinkCoordinator {
         let symbol = quicklink.iconSymbol ?? Quicklink.sfSymbol
         guard let bundleID = failure.missingApplicationBundleID else {
             await core.showNotice(
-                title: "Couldn’t Open \(quicklink.name)",
+                title: String(localized: "Couldn’t Open \(quicklink.name)"),
                 message: failure.localizedDescription, symbol: symbol, tone: .danger)
             return
         }
@@ -171,9 +246,9 @@ final class QuicklinkCoordinator {
         let name = applicationName(forBundleID: bundleID) ?? bundleID
         guard
             await core.reportFailure(
-                title: "Couldn’t Open \(quicklink.name)",
-                message: "\(name) isn’t installed any more.", symbol: symbol,
-                recovery: "Open with Default")
+                title: String(localized: "Couldn’t Open \(quicklink.name)"),
+                message: String(localized: "\(name) isn’t installed any more."), symbol: symbol,
+                recovery: String(localized: "Open with Default"))
         else { return }
         performQuicklinkOpen(quicklink, link: link, forcingDefaultApp: true)
     }
@@ -194,15 +269,15 @@ final class QuicklinkCoordinator {
         try store.update(draft)
     }
 
-    /// Deletes and unwinds every reference; `confirming: false` is for the pane, which asked.
-    func deleteQuicklink(id: UUID, confirming: Bool = true) async {
+    func deleteQuicklink(id: UUID, alwaysConfirm: Bool = false) async {
         guard let quicklink = store.quicklink(id: id) else { return }
-        if confirming, settings.quicklinkConfirmsBeforeDelete {
+        if alwaysConfirm || settings.quicklinkConfirmsBeforeDelete {
             guard
                 await core.confirm(
-                    title: "Delete “\(quicklink.name)”?",
-                    message: "Its shortcut, favorite slot and learned ranking go with it.",
-                    symbol: quicklink.iconSymbol ?? Quicklink.sfSymbol, confirmTitle: "Delete")
+                    title: String(localized: "Delete “\(quicklink.name)”?"),
+                    message: String(localized: "Its shortcut, favorite slot and learned ranking go with it."),
+                    symbol: quicklink.iconSymbol ?? Quicklink.sfSymbol,
+                    confirmTitle: String(localized: "Delete"))
             else { return }
         }
         // Unwound only once the row is gone: a failed delete must not strand its references.
@@ -210,7 +285,8 @@ final class QuicklinkCoordinator {
             try store.remove(id: id)
         } catch {
             await core.showNotice(
-                title: "Couldn’t Delete “\(quicklink.name)”", message: error.localizedDescription,
+                title: String(localized: "Couldn’t Delete “\(quicklink.name)”"),
+                message: error.localizedDescription,
                 symbol: quicklink.iconSymbol ?? Quicklink.sfSymbol, tone: .danger)
             return
         }
@@ -225,6 +301,21 @@ final class QuicklinkCoordinator {
         do { try store.setShowsInRootSearch(shows, id: id) } catch { report(error) }
     }
 
+    /// Keeps the row and its shortcut, but takes it out of every surface that could open it.
+    func setQuicklinkEnabled(_ enabled: Bool, id: UUID) {
+        do { try store.setEnabled(enabled, id: id) } catch { report(error) }
+    }
+
+    func copyQuicklink(id: UUID) {
+        guard let quicklink = openableQuicklink(id: id) else { return }
+        paletteCoordinator.hidePalette(restoreFocus: false)
+        guard Paster.copyPlainText(quicklink.link) else {
+            core.showMessage(String(localized: "Couldn’t copy link"))
+            return
+        }
+        core.showMessage(String(localized: "Link copied"))
+    }
+
     func duplicateQuicklink(id: UUID) {
         do { _ = try store.duplicate(id: id) } catch { report(error) }
     }
@@ -233,15 +324,77 @@ final class QuicklinkCoordinator {
     private func report(_ error: QuicklinkError) {
         Task {
             await core.showNotice(
-                title: "Couldn’t Save the Change", message: error.localizedDescription,
+                title: String(localized: "Couldn’t Save the Change"), message: error.localizedDescription,
                 symbol: Quicklink.sfSymbol, tone: .danger)
         }
     }
 
-    /// Opens the Quicklinks pane with the editor showing `quicklink`; nil is a new one.
     func editQuicklink(_ quicklink: Quicklink?) {
-        core.pendingQuicklinkEdit = QuicklinkEditRequest(quicklink: quicklink)
-        settingsCoordinator.showSettings(tab: .quicklinks)
+        guard settings.quicklinksEnabled else { return }
+        editor = QuicklinkEditorSession(quicklink: quicklink)
+        paletteCoordinator.showPalette(mode: .quicklinkEditor)
+    }
+
+    /// A new quicklink already filled in, from a link; nothing is written until it is saved.
+    func createQuicklink(name: String, link: String, openWithBundleID: String?) {
+        guard settings.quicklinksEnabled else { return }
+        let editor = QuicklinkEditorSession(quicklink: nil)
+        editor.name = name
+        editor.link = link
+        editor.openWithBundleID = openWithBundleID
+        self.editor = editor
+        paletteCoordinator.showPalette(mode: .quicklinkEditor)
+    }
+
+    func saveQuicklink() {
+        guard settings.quicklinksEnabled, let editor, editor.canSave else { return }
+        do {
+            var draft = editor.draft(now: Date())
+            if editor.original == nil {
+                try addQuicklink(draft)
+            } else {
+                guard let current = store.quicklink(id: draft.id) else {
+                    editor.errorMessage = String(
+                        localized: "This quicklink was deleted. Copy your changes before closing.")
+                    return
+                }
+                draft.isEnabled = current.isEnabled
+                try updateQuicklink(draft)
+            }
+            cancelQuicklinkEditing()
+        } catch {
+            editor.errorMessage = error.localizedDescription
+        }
+    }
+
+    func cancelQuicklinkEditing() {
+        guard core.palette.mode == .quicklinkEditor else { return }
+        if !core.palette.pop(preservingSelection: true) {
+            paletteCoordinator.hidePalette()
+            core.palette.prepare(mode: .launcher)
+        }
+        editor = nil
+    }
+
+    func editorDidClose(_ editor: QuicklinkEditorSession) {
+        if self.editor === editor { self.editor = nil }
+    }
+
+    /// Revealing needs a real path, which a template lacks until it expands.
+    static func revealablePath(of quicklink: Quicklink) -> String? {
+        guard !QuicklinkDestination.containsPlaceholder(quicklink.link),
+            case .path(let path)? = QuicklinkDestination.detect(quicklink.link)
+        else { return nil }
+        return path
+    }
+
+    /// False for a link that names no file or folder, leaving ⌘F unhandled.
+    @discardableResult
+    func showQuicklinkInFinder(_ quicklink: Quicklink) -> Bool {
+        guard let path = Self.revealablePath(of: quicklink) else { return false }
+        paletteCoordinator.hidePalette(restoreFocus: false)
+        AppLauncher.showInFinder(URL(fileURLWithPath: path))
+        return true
     }
 
     @discardableResult
@@ -274,7 +427,8 @@ final class QuicklinkCoordinator {
     func exportQuicklinks() async {
         guard !store.quicklinks.isEmpty else {
             await core.showNotice(
-                title: "Nothing to Export", message: "You haven’t created any quicklinks yet.",
+                title: String(localized: "Nothing to Export"),
+                message: String(localized: "You haven’t created any quicklinks yet."),
                 symbol: Quicklink.sfSymbol, tone: .neutral)
             return
         }
@@ -283,39 +437,66 @@ final class QuicklinkCoordinator {
         }
         do {
             try QuicklinkArchive.encode(store.quicklinks).write(to: url, options: .atomic)
-            core.showMessage("Exported \(store.quicklinks.count) Quicklinks")
+            core.showMessage(String(localized: "Exported \(store.quicklinks.count) Quicklinks"))
         } catch {
             await core.showNotice(
-                title: "Export Failed", message: error.localizedDescription,
+                title: String(localized: "Export Failed"), message: error.localizedDescription,
                 symbol: Quicklink.sfSymbol, tone: .danger)
         }
+    }
+
+    /// Merges into the library the way Settings → Import does, so Raycast and JSON share one rule.
+    @discardableResult
+    func addImportedQuicklinks(_ incoming: [Quicklink]) -> [Quicklink] {
+        let merge = QuicklinkArchive.merge(incoming, into: store.quicklinks)
+        return store.append(merge.additions)
+    }
+
+    /// A link's batch: nothing is added until the reader agrees, and duplicates are skipped.
+    func importQuicklinks(offered incoming: [Quicklink]) async {
+        guard settings.quicklinksEnabled, !incoming.isEmpty else { return }
+        guard
+            await core.confirm(
+                title: String(localized: "Add \(incoming.count) quicklinks from a link?"),
+                message: incoming.map { $0.name.isEmpty ? $0.link : "\($0.name) — \($0.link)" }
+                    .joined(separator: "\n"),
+                symbol: Quicklink.sfSymbol, confirmTitle: String(localized: "Add"), tone: .neutral,
+                confirmRole: .standard)
+        else { return }
+        let added = addImportedQuicklinks(incoming)
+        guard !added.isEmpty else {
+            return core.showMessage(String(localized: "Nothing to Import"), tone: .neutral)
+        }
+        core.showMessage(String(localized: "Imported \(added.count) quicklinks."))
     }
 
     func importQuicklinks() async {
         guard let url = BackupActions.chooseJSONFile() else { return }
         do {
             let incoming = try QuicklinkArchive.decode(Data(contentsOf: url))
-            let merge = QuicklinkArchive.merge(incoming, into: store.quicklinks)
-            let added = store.append(merge.additions)
+            let added = addImportedQuicklinks(incoming)
             // Everything offered was already here, so say so rather than "0 imported".
             guard !added.isEmpty else {
                 await core.showNotice(
-                    title: "Nothing to Import",
-                    message: "Every quicklink in this file is already in your library.",
+                    title: String(localized: "Nothing to Import"),
+                    message: String(localized: "Every quicklink in this file is already in your library."),
                     symbol: Quicklink.sfSymbol, tone: .neutral)
                 return
             }
-            let skipped = merge.skipped + (merge.additions.count - added.count)
+            let skipped = incoming.count - added.count
             let summary =
                 skipped == 0
-                ? "Imported \(added.count) quicklinks."
-                : "Imported \(added.count) quicklinks. Skipped \(skipped) already in your library."
+                ? String(localized: "Imported \(added.count) quicklinks.")
+                : String(
+                    localized: """
+                        Imported \(added.count) quicklinks. Skipped \(skipped) already in your library.
+                        """)
             await core.showNotice(
-                title: "Quicklinks Imported", message: summary, symbol: Quicklink.sfSymbol,
-                tone: .success)
+                title: String(localized: "Quicklinks Imported"), message: summary,
+                symbol: Quicklink.sfSymbol, tone: .success)
         } catch {
             await core.showNotice(
-                title: "Import Failed", message: error.localizedDescription,
+                title: String(localized: "Import Failed"), message: error.localizedDescription,
                 symbol: Quicklink.sfSymbol, tone: .danger)
         }
     }

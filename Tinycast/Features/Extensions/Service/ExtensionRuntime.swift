@@ -5,6 +5,8 @@ import JavaScriptCore
 @MainActor
 protocol ExtensionHostAPI: AnyObject, Sendable {
     func perform(api: String, method: String, arguments: [RenderValue]) async throws -> String
+    /// The context is gone; release anything opened on its behalf.
+    func sessionEnded()
 }
 
 /// Where a running command's UI or failure lands. Every callback arrives on the main actor.
@@ -17,12 +19,14 @@ protocol ExtensionRuntimeDelegate: AnyObject {
     func runtime(_ runtime: ExtensionRuntime, log level: String, message: String)
 }
 
-/// The one `JSContext` a command runs in. `@unchecked Sendable` is narrow: every touch is on `queue`,
-/// and only plain values cross. Why JavaScriptCore, and why one context, is in docs/features/extensions.md.
+/// The one `JSContext` a command runs in; every touch is on `queue`, only values cross.
 final class ExtensionRuntime: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "com.tinycast.extensions.js", qos: .userInitiated)
+    private let queue: DispatchQueue
     private var context: JSContext?
     private var timers: [String: DispatchSourceTimer] = [:]
+    private var hostTasks: [String: Task<Void, Never>] = [:]
+    private var generation = UUID()
+    private var idleWaiters: [CheckedContinuation<Void, Never>] = []
     private let nodeShims = ExtensionNodeShims()
 
     /// Set once at startup; read on the JS queue, so it is written before the runtime ever boots.
@@ -30,8 +34,10 @@ final class ExtensionRuntime: @unchecked Sendable {
     private let hostAPI: ExtensionHostAPI
     private let runtimeOverride: URL?
 
-    /// `runtimeURL` overrides the bundled runtime; only the harness passes it, having no app bundle.
-    init(hostAPI: ExtensionHostAPI, runtimeURL: URL? = nil) {
+    /// `runtimeURL` overrides the bundled runtime; only the harness passes it.
+    init(hostAPI: ExtensionHostAPI, runtimeURL: URL? = nil, priority: DispatchQoS = .userInitiated) {
+        queue = DispatchQueue(
+            label: "com.tinycast.extensions.js", qos: priority, autoreleaseFrequency: .workItem)
         self.hostAPI = hostAPI
         self.runtimeOverride = runtimeURL
     }
@@ -50,9 +56,9 @@ final class ExtensionRuntime: @unchecked Sendable {
         var errorDescription: String? {
             switch self {
             case .runtimeResourceMissing:
-                return "RaycastRuntime.generated.js is missing from the app bundle."
+                return String(localized: "RaycastRuntime.generated.js is missing from the app bundle.")
             case .bootFailed(let message):
-                return "The extension runtime failed to start: \(message)"
+                return String(localized: "The extension runtime failed to start: \(message)")
             }
         }
     }
@@ -91,7 +97,7 @@ final class ExtensionRuntime: @unchecked Sendable {
         // Stored only once it is known good: a half-built one would make every later boot a no-op.
         self.context = context
 
-        // From here on an exception is a bug in a command, not in the runtime: report it and keep going.
+        // From here on an exception is a bug in a command: report it and keep going.
         context.exceptionHandler = { [weak self] _, exception in
             self?.report(level: "error", message: ExtensionRuntime.describe(exception))
         }
@@ -113,20 +119,20 @@ final class ExtensionRuntime: @unchecked Sendable {
                 "start",
                 withArguments: [
                     session, code, file.path, file.deletingLastPathComponent().path,
-                    mode.runtimeName, payload
+                    mode.rawValue, payload
                 ])
         }
     }
 
     /// Pre-encoded: `[Any]` isn't Sendable, so only the JSON string crosses onto the queue.
-    func dispatch(session: String, handler: String, payload: String) async {
+    func dispatch(session: String, handler: String, payload: String, completesSession: Bool = false) async {
         await onQueue { context in
             _ = context.objectForKeyedSubscript("__tinycast")?
-                .invokeMethod("dispatch", withArguments: [session, handler, payload])
+                .invokeMethod("dispatch", withArguments: [session, handler, payload, completesSession])
         }
     }
 
-    /// Escape / the back chevron inside a pushed screen. Returns true when a screen was actually popped.
+    /// Escape or the back chevron inside a pushed screen; true when one was popped.
     func popNavigation(session: String) async -> Bool {
         await withCheckedContinuation { continuation in
             queue.async {
@@ -150,6 +156,7 @@ final class ExtensionRuntime: @unchecked Sendable {
             _ = context.objectForKeyedSubscript("__tinycast")?
                 .invokeMethod("stop", withArguments: [session])
         }
+        queue.async { self.nodeShims.closeFiles() }
     }
 
     private func onQueue(_ body: @escaping @Sendable (JSContext) -> Void) async {
@@ -236,29 +243,55 @@ final class ExtensionRuntime: @unchecked Sendable {
         // Decode to `RenderValue` here so only `Sendable` values reach the main actor.
         let arguments = RenderValue.arguments(from: argsJSON)
         let hostAPI = self.hostAPI
-        Task { @MainActor in
+        let generation = self.generation
+        hostTasks[callId] = Task { @MainActor [weak self] in
+            guard !Task.isCancelled else { return }
             do {
                 let json = try await hostAPI.perform(
                     api: api, method: method, arguments: arguments)
-                await self.settle(callId: callId, ok: true, payload: json)
+                await self?.settle(callId: callId, generation: generation, ok: true, payload: json)
             } catch {
-                await self.settle(
-                    callId: callId, ok: false,
+                await self?.settle(
+                    callId: callId, generation: generation, ok: false,
                     payload: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
             }
         }
     }
 
-    private func settle(callId: String, ok: Bool, payload: String) async {
-        await onQueue { context in
-            _ = context.objectForKeyedSubscript("__tinycast")?
-                .invokeMethod("settle", withArguments: [callId, ok, payload])
+    private func settle(callId: String, generation: UUID, ok: Bool, payload: String) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            queue.async {
+                defer { continuation.resume() }
+                guard generation == self.generation else { return }
+                self.hostTasks[callId] = nil
+                _ = self.context?.objectForKeyedSubscript("__tinycast")?
+                    .invokeMethod("settle", withArguments: [callId, ok, payload])
+                if self.hostTasks.isEmpty { self.resumeIdleWaiters() }
+            }
         }
+    }
+
+    func drainHostCalls() async {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                if self.hostTasks.isEmpty {
+                    continuation.resume()
+                } else {
+                    self.idleWaiters.append(continuation)
+                }
+            }
+        }
+    }
+
+    private func resumeIdleWaiters() {
+        let waiters = idleWaiters
+        idleWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
     }
 
     private func deliverRender(session: String, json: String) {
         guard let delegate else { return }
-        // Decode here: parsing a large list is the expensive part, and it belongs off the main actor.
+        // Parsing a large list is the expensive part, and it belongs off the main actor.
         guard let tree = RenderTree(json: json) else {
             report(level: "error", message: "Could not decode the render tree for \(session).")
             return
@@ -297,13 +330,19 @@ final class ExtensionRuntime: @unchecked Sendable {
         timers[id] = nil
     }
 
-    /// The whole context goes; the next `boot` builds a fresh one (~7 ms warm). Timers are global and
-    /// React's scheduler rides them, so reuse either cancels its commits or leaks an extension's.
+    /// Timers are global and React's scheduler rides them, so a context is never reused.
     func shutdown() {
+        let hostAPI = self.hostAPI
+        Task { @MainActor in hostAPI.sessionEnded() }
         queue.async {
             for timer in self.timers.values { timer.cancel() }
             self.timers.removeAll()
+            for task in self.hostTasks.values { task.cancel() }
+            self.hostTasks.removeAll()
+            self.resumeIdleWaiters()
+            self.generation = UUID()
             self.context = nil
+            self.nodeShims.closeFiles()
         }
     }
 

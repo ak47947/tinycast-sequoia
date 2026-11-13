@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct NotesSettingsView: View {
+    @Environment(AppCore.self) private var core
     @Environment(AppSettings.self) private var settings
 
     var body: some View {
@@ -8,54 +9,47 @@ struct NotesSettingsView: View {
         return Form {
             Section {
                 Toggle(isOn: $settings.notesEnabled) {
-                    Text("Enable Notes")
-                    Text("Keep plain Markdown notes in a floating editor, loaded only when needed.")
+                    SettingsFeatureToggleLabel(
+                        anchor: .notesNotes, title: "Enable Notes",
+                        subtitle: "Plain Markdown in a floating editor.")
+                }
+            }
+            .settingsAnchor(.notesNotes)
+
+            Section {
+                Toggle(isOn: $settings.notesRendersMarkdown) {
+                    SettingsRowTitle(.notesOptions, "Render Markdown")
+                    Text("Formats as you type.")
+                }
+                .settingsEnabled(settings.notesEnabled)
+                Toggle(isOn: $settings.notesShowsFormattingBar) {
+                    SettingsRowTitle(.notesOptions, "Show Formatting Bar")
+                }
+                .settingsEnabled(settings.notesEnabled && settings.notesRendersMarkdown)
+                Toggle(isOn: $settings.notesShowsInMenuBar) {
+                    SettingsRowTitle(.notesOptions, "Show in Menu Bar")
+                    Text("Right-click the icon to create or search notes.")
+                }
+                .settingsEnabled(settings.notesEnabled)
+                LabeledContent {
+                    if settings.notesFolder != nil {
+                        Button(
+                            String(localized: "notes-use-default-folder", defaultValue: "Use Default"),
+                            action: core.notesCoordinator.resetNotesFolder)
+                    }
+                    Button("Choose…", action: core.notesCoordinator.chooseNotesFolder)
+                } label: {
+                    SettingsRowTitle(.notesOptions, "Notes Folder")
+                    Text((core.notesStore.notesDirectory.path as NSString).abbreviatingWithTildeInPath)
                 }
             } header: {
-                Text("Notes")
+                SettingsSectionHeader(.notesOptions)
             }
 
-            NotesCommandsSection()
+            FeatureCommandsSection(owner: .notes, anchor: .notesCommands)
                 .settingsEnabled(settings.notesEnabled)
         }
         .formStyle(.grouped)
-    }
-}
-
-private struct NotesCommandsSection: View {
-    @Environment(VisibilityStore.self) private var visibility
-
-    private let entries = [CommandID.showNotes, .createNote, .searchNotes]
-        .compactMap(CommandCatalog.entry(for:))
-
-    var body: some View {
-        Section {
-            ForEach(entries) { entry in
-                SettingsRow(title: entry.name) {
-                    AppIconView(app: entry)
-                        .frame(width: Theme.Size.settingsRowIcon, height: Theme.Size.settingsRowIcon)
-                } trailing: {
-                    if let action = entry.hotKeyAction {
-                        ShortcutRecorder(action: action)
-                    }
-                    Toggle("", isOn: visibilityBinding(entry))
-                        .labelsHidden()
-                        .toggleStyle(.checkbox)
-                        .accessibilityLabel("Show \(entry.name) in launcher")
-                }
-            }
-        } header: {
-            Text("Commands")
-        } footer: {
-            Text("A shortcut works even when its command is hidden from the launcher.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func visibilityBinding(_ entry: AppEntry) -> Binding<Bool> {
-        Binding(
-            get: { visibility.isItemVisible(entry) },
-            set: { visibility.setItemVisible($0, for: entry) })
+        .settingsScrollTarget(.notes)
     }
 }

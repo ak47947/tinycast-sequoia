@@ -1,4 +1,3 @@
-// Standalone test for uninstall attribution, search roots, rules, protection and planning.
 import Foundation
 
 @main
@@ -10,6 +9,9 @@ struct UninstallTests {
     static let home = "/Users/tester"
     static let ownBundleID = "com.tinycast.app"
     static let ownBundleURL = URL(fileURLWithPath: "/Applications/Tinycast.app")
+    static let recentDocuments =
+        "Application Support/com.apple.sharedfilelist/"
+        + "com.apple.LSSharedFileList.ApplicationRecentDocuments"
 
     static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
         if condition() {
@@ -133,6 +135,9 @@ struct UninstallTests {
         expect(
             evidence("com.foo.Bar.binarycookies", "Cookies", app) == .bundleID,
             "a .binarycookies strips")
+        expect(
+            evidence("com.foo.bar.sfl3", recentDocuments, app) == .bundleID,
+            "a recent-documents list strips its .sfl3 and matches case-folded")
         expect(
             evidence("com.foo.Bar.8A1F2C3D-1111-2222-3333-444455556666.plist", "Preferences/ByHost", app)
                 == .bundleID,
@@ -273,8 +278,7 @@ struct UninstallTests {
             "every bin directory is absolute or home-relative")
     }
 
-    /// The home directory holds the user's own work, so nothing there is ever a candidate. Asserting
-    /// the absence keeps a future root addition from quietly reopening it.
+    /// Nothing in home is ever a candidate; asserting it guards a future root.
     static func testHomeIsOutOfScope() {
         expect(
             !UninstallSearchRoot.all.contains { $0.path(home: home) == home },
@@ -285,8 +289,7 @@ struct UninstallTests {
                 return path.hasPrefix(home + "/Library/") || path.hasPrefix("/Library/")
             },
             "every root lives under a Library directory — never ~/Documents, ~/Dev or ~/Code")
-        // VS Code's CFBundleName is literally "Code", so it *would* match `~/Code` on name alone —
-        // the root table is the only thing standing between that and the user's source tree.
+        // VS Code's bundle name is "Code", so only the root table saves `~/Code`.
         let code = identity(
             bundleID: "com.microsoft.VSCode", name: "Visual Studio Code", bundleName: "Code")
         expect(
@@ -434,6 +437,16 @@ struct UninstallTests {
             classify(PathFacts(path: "/Library/Caches/com.foo.Bar", parentIsWritable: false))
                 == .parentNotWritable,
             "trashing is a rename out of the parent, so an unwritable parent locks the row")
+        expect(
+            classify(
+                PathFacts(
+                    path: "/Applications/Store App.app", isDirectory: true, isWritable: false,
+                    isOwnedByCurrentUser: false)) == .notWritable,
+            "a root-owned App Store bundle is locked — moving a directory rewrites its own `..`")
+        expect(
+            classify(PathFacts(path: "/Library/Caches/com.foo.Bar.plist", isWritable: false))
+                == .removable,
+            "an unwritable file still trashes — only a directory needs its own write bit")
 
         let container = PathFacts(path: home + "/Library/Containers/com.foo.Bar")
         expect(
@@ -445,8 +458,8 @@ struct UninstallTests {
 
         let everything = PathFacts(
             path: home + "/Library/Containers/com.foo.Bar", volumeIsReadOnly: true,
-            isSystemRestricted: true, isUserImmutable: true, isOwnedByCurrentUser: false,
-            parentIsWritable: false, parentIsSticky: true)
+            isSystemRestricted: true, isUserImmutable: true, isDirectory: true, isWritable: false,
+            isOwnedByCurrentUser: false, parentIsWritable: false, parentIsSticky: true)
         expect(
             classify(everything) == .systemProtected,
             "precedence: a SIP path reports as system-protected, the most useful of its reasons")
@@ -463,6 +476,10 @@ struct UninstallTests {
             !UninstallProtectionRules.isTCCProtected(
                 path: home + "/Library/Preferences/com.foo.Bar.plist", home: home),
             "preferences are not TCC-gated")
+        expect(
+            UninstallProtectionRules.isTCCProtected(
+                path: home + "/Library/" + recentDocuments + "/com.foo.bar.sfl3", home: home),
+            "recent-documents lists are TCC-gated — measured: listing them needs Full Disk Access")
         expect(
             !UninstallProtectionRules.isTCCProtected(
                 path: home + "/Library/Application Scripts/com.foo.Bar", home: home),
@@ -577,8 +594,7 @@ struct UninstallTests {
 
     // MARK: - Cross-identity sweep
 
-    /// The one assertion about the matcher as a whole: no artifact belonging to one app may ever be
-    /// produced for another. A rule that regresses in isolation still gets caught here.
+    /// No artifact of one app may be produced for another, even if a rule regresses.
     static func testCrossIdentitySweep() {
         let apps: [(id: String, name: String)] = [
             ("com.apple.iBooksX", "Books"),
@@ -597,7 +613,8 @@ struct UninstallTests {
         let shapes: [(String) -> String] = [
             { $0 }, { $0 + ".plist" }, { $0 + ".savedState" }, { $0 + ".binarycookies" },
             { $0 + ".helper" }, { $0 + ".Renderer.plist" }, { "group." + $0 },
-            { "ABCDE12345." + $0 }, { $0 + ".8A1F2C3D-1111-2222-3333-444455556666.plist" }
+            { "ABCDE12345." + $0 }, { $0 + ".8A1F2C3D-1111-2222-3333-444455556666.plist" },
+            { $0.lowercased() + ".sfl3" }
         ]
 
         var leaks: [String] = []
@@ -644,13 +661,12 @@ struct UninstallTests {
             roots.first { $0.base == .systemLibrary && $0.relativePath == "Caches" }?.path(home: home)
                 == "/Library/Caches",
             "a system root ignores the home directory")
-        // A child of these is a bundle ID by construction, so a name match there is a false positive
-        // by definition. Asserting the exclusion rather than the inclusion keeps this honest as
-        // plug-in wells are added.
+        // A child of these is a bundle ID, so a name match there is a false positive.
         let bundleIDOnly: Set<String> = [
             "Preferences", "Preferences/ByHost", "Containers", "Group Containers",
             "Application Scripts", "Saved Application State", "HTTPStorages", "WebKit", "Cookies",
-            "Autosave Information", "LaunchAgents", "LaunchDaemons", "PrivilegedHelperTools"
+            "Autosave Information", "LaunchAgents", "LaunchDaemons", "PrivilegedHelperTools",
+            recentDocuments
         ]
         expect(
             roots.filter { bundleIDOnly.contains($0.relativePath) }

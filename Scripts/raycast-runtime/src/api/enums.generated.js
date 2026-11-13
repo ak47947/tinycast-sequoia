@@ -5,6 +5,12 @@ export const ActionStyle = Object.freeze({
   "Destructive": "destructive",
 });
 
+export const AlertActionStyle = Object.freeze({
+  "Default": "default",
+  "Cancel": "cancel",
+  "Destructive": "destructive",
+});
+
 export const Color = Object.freeze({
   "Blue": "raycast-blue",
   "Green": "raycast-green",
@@ -542,6 +548,12 @@ export const PopToRootType = Object.freeze({
   "Suspended": "suspended",
 });
 
+export const ToastStyle = Object.freeze({
+  "Success": "SUCCESS",
+  "Failure": "FAILURE",
+  "Animated": "ANIMATED",
+});
+
 export const nestedEnums = {
   "Alert": {
     "ActionStyle": Object.freeze({
@@ -561,6 +573,7 @@ export const nestedEnums = {
       "Web": "web",
       "App": "app",
       "AppURI": "appURI",
+      "ClientIdMetadataDocument": "clientIdMetadataDocument",
     }),
   },
   "Toast": {

@@ -9,7 +9,6 @@ final class InputSourceSwitcher {
         let title: String
     }
 
-    /// Posted by TIS when a keyboard source is added or removed in System Settings.
     static let sourcesDidChange = Notification.Name(
         kTISNotifyEnabledKeyboardInputSourcesChanged as String)
 
@@ -22,7 +21,7 @@ final class InputSourceSwitcher {
 
     private var session: Session?
 
-    /// Every enabled keyboard source; a `selected` one that is gone stays listed, so Settings keeps it.
+    /// A `selected` source that is gone stays listed, so Settings keeps showing it.
     func options(selecting selected: String?) -> [Option] {
         var options = Self.enabledKeyboardSources().compactMap(Self.option(for:))
         if let selected, !options.contains(where: { $0.id == selected }) {
@@ -57,6 +56,33 @@ final class InputSourceSwitcher {
         TISSelectInputSource(session.previousSource)
     }
 
+    static func toggleCapsLockInputSource() {
+        guard let current = currentSource() else { return }
+        let isASCII: Bool = property(kTISPropertyInputSourceIsASCIICapable, of: current) ?? false
+        let destination: TISInputSource?
+        if isASCII {
+            let candidates = enabledKeyboardSources().filter {
+                property(kTISPropertyInputSourceIsASCIICapable, of: $0) == false
+            }
+            let history =
+                UserDefaults.standard.persistentDomain(forName: "com.apple.HIToolbox")?[
+                    "AppleInputSourceHistory"] as? [[String: Any]] ?? []
+            destination =
+                history.lazy.compactMap { entry in
+                    candidates.first { source in
+                        guard let id = identifier(of: source) else { return false }
+                        let mode: String? = property(kTISPropertyInputModeID, of: source)
+                        return entry["Input Mode"] as? String == id
+                            || (mode != nil && entry["Input Mode"] as? String == mode)
+                            || entry["Bundle ID"] as? String == id
+                    }
+                }.first ?? candidates.first
+        } else {
+            destination = TISCopyCurrentASCIICapableKeyboardInputSource()?.takeRetainedValue()
+        }
+        if let destination { TISSelectInputSource(destination) }
+    }
+
     private static func currentSource() -> TISInputSource? {
         TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
     }
@@ -87,7 +113,7 @@ final class InputSourceSwitcher {
             && property(kTISPropertyInputSourceIsSelectCapable, of: source) == true
     }
 
-    /// TIS vends properties as untyped pointers, so an unexpected type must read as absent, not trap.
+    /// TIS vends untyped pointers, so an unexpected type reads as absent, not a trap.
     private static func property<Value>(_ key: CFString, of source: TISInputSource) -> Value? {
         guard let value = TISGetInputSourceProperty(source, key) else { return nil }
         return Unmanaged<AnyObject>.fromOpaque(value).takeUnretainedValue() as? Value

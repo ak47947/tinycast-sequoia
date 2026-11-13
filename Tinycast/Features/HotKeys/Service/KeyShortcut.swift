@@ -8,14 +8,14 @@ struct KeyShortcut: Hashable, Sendable {
 
     init(carbonKeyCode: Int, carbonModifiers: Int) {
         self.carbonKeyCode = carbonKeyCode
-        // Mask to the four real modifiers, so device bits can't throw equality off.
+        // Mask to the supported modifiers, so device bits can't throw equality off.
         self.carbonModifiers = carbonModifiers & Self.allModifiers
     }
 
-    /// Captures from a key-down, or nil: one of ⌘⌥⌃ is required, bar function keys.
+    /// Captures from a key-down, or nil: one of ⌘⌥⌃🌐 is required, bar function keys.
     init?(keyCode: Int, modifierFlags: NSEvent.ModifierFlags) {
-        let flags = modifierFlags.intersection([.command, .option, .control, .shift])
-        let hasCommandingModifier = !flags.isDisjoint(with: [.command, .option, .control])
+        let flags = modifierFlags.intersection([.command, .option, .control, .shift, .function])
+        let hasCommandingModifier = !flags.isDisjoint(with: [.command, .option, .control, .function])
         guard hasCommandingModifier || Self.isFunctionKey(keyCode) else { return nil }
         self.init(carbonKeyCode: keyCode, carbonModifiers: Self.carbonModifiers(from: flags))
     }
@@ -23,7 +23,7 @@ struct KeyShortcut: Hashable, Sendable {
     /// The chord ✦ stands for, nil without a Hyper key; a closure, so a toggle re-renders keycaps.
     @MainActor static var displayedHyperChord: () -> NSEvent.ModifierFlags? = { nil }
 
-    /// One string per keycap in canonical order (⌃⌥⇧⌘), with the key glyph last.
+    /// One string per keycap in canonical order (🌐⌃⌥⇧⌘), with the key glyph last.
     @MainActor var keycaps: [String] {
         Self.collapsedModifierSymbols(from: modifierFlags, hyperChord: Self.displayedHyperChord())
             + [keyGlyph]
@@ -37,6 +37,7 @@ struct KeyShortcut: Hashable, Sendable {
         if carbonModifiers & optionKey != 0 { flags.insert(.option) }
         if carbonModifiers & shiftKey != 0 { flags.insert(.shift) }
         if carbonModifiers & cmdKey != 0 { flags.insert(.command) }
+        if carbonModifiers & kEventKeyModifierFnMask != 0 { flags.insert(.function) }
         return flags
     }
 
@@ -46,6 +47,7 @@ struct KeyShortcut: Hashable, Sendable {
         if flags.contains(.option) { carbon |= optionKey }
         if flags.contains(.shift) { carbon |= shiftKey }
         if flags.contains(.command) { carbon |= cmdKey }
+        if flags.contains(.function) { carbon |= kEventKeyModifierFnMask }
         return carbon
     }
 
@@ -66,7 +68,13 @@ struct KeyShortcut: Hashable, Sendable {
             carbonKeyCode: carbonKeyCode, carbonModifiers: Self.carbonModifiers(from: retargeted))
     }
 
-    /// `modifierSymbols` with the Hyper chord collapsed to "✦", when one is configured at all.
+    func secureInputEquivalent(of hyperChord: NSEvent.ModifierFlags) -> KeyShortcut? {
+        guard modifierFlags.isSuperset(of: hyperChord) else { return nil }
+        let reduced = modifierFlags.subtracting(hyperChord).union(.control)
+        return KeyShortcut(
+            carbonKeyCode: carbonKeyCode, carbonModifiers: Self.carbonModifiers(from: reduced))
+    }
+
     static func collapsedModifierSymbols(
         from flags: NSEvent.ModifierFlags, hyperChord: NSEvent.ModifierFlags?
     ) -> [String] {
@@ -76,9 +84,10 @@ struct KeyShortcut: Hashable, Sendable {
         return [HyperKeyPhysicalKey.hyperGlyph] + modifierSymbols(from: flags.subtracting(hyperChord))
     }
 
-    /// Modifier symbols in the fixed ⌃⌥⇧⌘ order every macOS surface uses.
+    /// Modifier symbols in fixed 🌐⌃⌥⇧⌘ order.
     static func modifierSymbols(from flags: NSEvent.ModifierFlags) -> [String] {
         var symbols: [String] = []
+        if flags.contains(.function) { symbols.append("🌐︎") }
         if flags.contains(.control) { symbols.append("⌃") }
         if flags.contains(.option) { symbols.append("⌥") }
         if flags.contains(.shift) { symbols.append("⇧") }
@@ -90,20 +99,24 @@ struct KeyShortcut: Hashable, Sendable {
         functionKeyNames[keyCode] != nil
     }
 
-    private static let allModifiers = cmdKey | optionKey | controlKey | shiftKey
+    /// 🎤, as remapped by `DictationKeyManager`.
+    var isDictationKey: Bool { carbonKeyCode == kVK_F20 }
+
+    private static let allModifiers = cmdKey | optionKey | controlKey | shiftKey | kEventKeyModifierFnMask
 
     // MARK: - Key glyph
 
     /// A fixed table for keys with no character, else translated through the current layout.
     @MainActor private var keyGlyph: String {
+        if isDictationKey { return "🎤" }
         if let special = Self.specialKeyGlyphs[carbonKeyCode] { return special }
         if let name = Self.functionKeyNames[carbonKeyCode] { return name }
-        return Self.layoutCharacter(for: carbonKeyCode)?.uppercased() ?? "?"
+        return ASCIIKeyboardLayout.character(for: carbonKeyCode)?.uppercased() ?? "?"
     }
 
     private static let specialKeyGlyphs: [Int: String] = [
-        kVK_Return: "↵", kVK_ANSI_KeypadEnter: "⌤", kVK_Tab: "⇥", kVK_Space: "Space",
-        kVK_Delete: "⌫", kVK_ForwardDelete: "⌦", kVK_Escape: "⎋",
+        kVK_Return: "↵", kVK_ANSI_KeypadEnter: "⌤", kVK_Tab: "⇥", kVK_Space: String(localized: "Space"),
+        kVK_Delete: "⌫", kVK_ForwardDelete: "⌦", kVK_Escape: "esc",
         kVK_LeftArrow: "←", kVK_RightArrow: "→", kVK_UpArrow: "↑", kVK_DownArrow: "↓",
         kVK_Home: "↖", kVK_End: "↘", kVK_PageUp: "⇞", kVK_PageDown: "⇟", kVK_Help: "?⃝"
     ]
@@ -115,37 +128,6 @@ struct KeyShortcut: Hashable, Sendable {
         kVK_F16: "F16", kVK_F17: "F17", kVK_F18: "F18", kVK_F19: "F19", kVK_F20: "F20"
     ]
 
-    // `TISGetInputSourceProperty` is only safe on the main thread.
-    @MainActor private static func layoutCharacter(for keyCode: Int) -> String? {
-        guard
-            let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?
-                .takeRetainedValue(),
-            let layoutDataPointer = TISGetInputSourceProperty(
-                source, kTISPropertyUnicodeKeyLayoutData)
-        else { return nil }
-
-        let layoutData = unsafeBitCast(layoutDataPointer, to: CFData.self)
-        let keyLayout = unsafeBitCast(
-            CFDataGetBytePtr(layoutData), to: UnsafePointer<UCKeyboardLayout>.self)
-        var deadKeyState: UInt32 = 0
-        var length = 0
-        var characters = [UniChar](repeating: 0, count: 4)
-
-        let error = UCKeyTranslate(
-            keyLayout,
-            UInt16(keyCode),
-            UInt16(kUCKeyActionDisplay),
-            0,  // no modifiers: the glyph is the key's base character
-            UInt32(LMGetKbdType()),
-            OptionBits(kUCKeyTranslateNoDeadKeysBit),
-            &deadKeyState,
-            characters.count,
-            &length,
-            &characters
-        )
-        guard error == noErr, length > 0 else { return nil }
-        return String(utf16CodeUnits: characters, count: length)
-    }
 }
 
 // Decoding routes through the masking initializer. See docs/features/hotkeys.md#persistence.

@@ -4,10 +4,11 @@ import SwiftUI
 @MainActor
 @Observable
 final class NotesCoordinator {
-    private enum Presentation {
+    private enum Presentation: Equatable {
         case editor
-        case create
+        case create(source: String)
         case search
+        case note(NoteID)
     }
 
     private let store: NotesStore
@@ -17,6 +18,9 @@ final class NotesCoordinator {
     @ObservationIgnored private lazy var windowController = NotesWindowController(coordinator: self)
     @ObservationIgnored private lazy var switcherController = NoteSwitcherWindowController(
         coordinator: self)
+    @ObservationIgnored private lazy var headingMenuController = NoteHeadingMenuWindowController(
+        coordinator: self)
+    @ObservationIgnored private var menuBarController: NotesMenuBarController?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var issueTask: Task<Void, Never>?
     @ObservationIgnored private var operationTask: Task<Void, Never>?
@@ -28,19 +32,32 @@ final class NotesCoordinator {
     private(set) var switcherSelection: NoteID?
     private(set) var switcherFocusRevision = 0
     private(set) var characterCount = 0
+    private(set) var formatting = NoteFormatting.plain
+    private(set) var isFormattingBarExpanded: Bool
+    private(set) var isHeadingMenuPresented = false
+    /// A press closes the menu before its button fires, so the button must not reopen it.
+    @ObservationIgnored private var headingMenuWasOpenAtPress = false
+    /// The heading button in the panel's flipped content space, reported by the bar as it lays out.
+    @ObservationIgnored var headingButtonFrame: CGRect = .zero
     private var switcherRename = NoteSwitcherRenameState()
     private var presentationGeneration = 0
+
+    @ObservationIgnored private let saveFormattingBarExpanded: @Sendable (Bool) -> Void
 
     init(
         store: NotesStore,
         settings: AppSettings,
         appIndex: AppIndex,
-        core: AppCore
+        core: AppCore,
+        isFormattingBarExpanded: Bool = false,
+        saveFormattingBarExpanded: @escaping @Sendable (Bool) -> Void = { _ in }
     ) {
         self.store = store
         self.settings = settings
         self.appIndex = appIndex
         self.core = core
+        self.isFormattingBarExpanded = isFormattingBarExpanded
+        self.saveFormattingBarExpanded = saveFormattingBarExpanded
         store.onIssue = { [weak self] issue in self?.present(issue) }
     }
 
@@ -52,10 +69,9 @@ final class NotesCoordinator {
     }
 
     var hasActiveNote: Bool { store.activeID != nil }
-    var isActiveNoteEmpty: Bool { store.activeID != nil && store.source.isEmpty }
     /// UTF-16 units, straight off the text storage: the only length TextKit hands back in O(1).
     var characterCountLabel: String {
-        characterCount == 1 ? "1 character" : "\(characterCount) characters"
+        String(localized: "\(characterCount) characters")
     }
 
     var searchQueryBinding: Binding<String> {
@@ -65,6 +81,8 @@ final class NotesCoordinator {
     }
 
     var activeTitle: String { store.activeTitle }
+    var rendersMarkdown: Bool { settings.notesRendersMarkdown }
+    var showsFormattingBar: Bool { settings.notesRendersMarkdown && settings.notesShowsFormattingBar }
     var isSearching: Bool { store.isSearching }
     var visibleNotes: [NoteSummary] {
         store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -82,12 +100,14 @@ final class NotesCoordinator {
         enablementGeneration &+= 1
         let generation = enablementGeneration
         appIndex.setCommandsVisible([.showNotes, .createNote, .searchNotes], settings.notesEnabled)
+        applyMenuBarItem()
         guard !settings.notesEnabled else { return }
         presentationGeneration &+= 1
         pendingPresentation = nil
         loadTask?.cancel()
         loadTask = nil
         operationTask?.cancel()
+        closeHeadingMenu()
         closeSwitcher(focusEditor: false)
         windowController.hide(restoreFocus: false)
         Task { [weak self] in
@@ -98,25 +118,49 @@ final class NotesCoordinator {
         }
     }
 
+    func applyMenuBarItem() {
+        let shows = settings.notesEnabled && settings.notesShowsInMenuBar
+        guard shows != (menuBarController != nil) else { return }
+        menuBarController?.remove()
+        menuBarController = shows ? NotesMenuBarController(coordinator: self) : nil
+    }
+
     /// Quit waits on this so the 300 ms autosave debounce cannot swallow the last edit.
     func prepareForTermination() async {
         await store.flush()
     }
 
-    func show() {
-        request(.editor)
+    func toggle() {
+        if windowController.isVisible {
+            hide()
+        } else {
+            request(.editor)
+        }
     }
 
     func createNote() {
-        request(.create)
+        createNote(text: "")
+    }
+
+    func createNote(text: String) {
+        request(.create(source: text))
     }
 
     func searchNotes() {
         request(.search)
     }
 
+    func open(_ id: NoteID) {
+        request(.note(id))
+    }
+
+    func copyDeepLink(to id: NoteID) {
+        core.deepLinkCoordinator.copyLink(toNote: id)
+    }
+
     func openSwitcher() {
         guard settings.notesEnabled, store.isLoaded else { return }
+        closeHeadingMenu()
         if isSwitcherPresented {
             switcherFocusRevision &+= 1
             return
@@ -138,6 +182,7 @@ final class NotesCoordinator {
     }
 
     func hide() {
+        closeHeadingMenu()
         presentationGeneration &+= 1
         pendingPresentation = nil
         closeSwitcher(focusEditor: false)
@@ -146,7 +191,9 @@ final class NotesCoordinator {
     }
 
     func handleEscape() {
-        if isSwitcherPresented {
+        if isHeadingMenuPresented {
+            closeHeadingMenu()
+        } else if isSwitcherPresented {
             closeSwitcher()
         } else {
             hide()
@@ -188,6 +235,7 @@ final class NotesCoordinator {
         select(id)
     }
 
+    /// Renaming edits the filename, so the field starts from that and never from a derived line.
     func beginSwitcherRename(_ summary: NoteSummary) {
         switcherRename.begin(id: summary.id, title: summary.title)
     }
@@ -247,14 +295,14 @@ final class NotesCoordinator {
     }
 
     func trash(_ id: NoteID) {
-        guard let title = store.summaries.first(where: { $0.id == id })?.title else { return }
+        guard let title = store.summaries.first(where: { $0.id == id })?.displayTitle else { return }
         runOperation { [weak self] generation in
             guard let self else { return }
             let confirmed = await core.confirm(
-                title: "Move “\(title)” to Trash?",
-                message: "You can recover it from the Trash in Finder.",
+                title: String(localized: "Move “\(title)” to Trash?"),
+                message: String(localized: "You can recover it from the Trash in Finder."),
                 symbol: nil,
-                confirmTitle: "Move to Trash")
+                confirmTitle: String(localized: "Move to Trash"))
             guard confirmed, settings.notesEnabled, !Task.isCancelled else { return }
             let switcherOrder = visibleNotes.map(\.id)
             let removed = await store.trash(id)
@@ -273,15 +321,34 @@ final class NotesCoordinator {
         }
     }
 
+    /// Points Notes at a folder as it is; nothing is moved out of the old one.
+    func chooseNotesFolder() {
+        guard
+            let url = FolderPicker.choose(
+                message: String(localized: "Choose the folder your notes are kept in."),
+                startingAt: store.notesDirectory)
+        else { return }
+        settings.notesFolder = AppPaths.contentFolderSetting(for: url, named: "Notes")
+    }
+
+    func resetNotesFolder() {
+        settings.notesFolder = nil
+    }
+
     func openNotesFolder() {
         guard let fileURL = store.activeFileURL else {
             NSWorkspace.shared.open(store.notesDirectory)
             return
         }
-        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+        AppLauncher.showInFinder(fileURL)
+    }
+
+    func moveToTopRight() {
+        windowController.moveToTopRight()
     }
 
     func updateSource(_ source: String) {
+        closeHeadingMenu()
         store.updateSource(source)
     }
 
@@ -290,19 +357,78 @@ final class NotesCoordinator {
         characterCount = count
     }
 
+    /// Id and epoch, not the whole input: comparing a long source on every caret move is not free.
+    func updateFormatting(_ input: NoteEditorInput, _ formatting: NoteFormatting) {
+        let current = editorInput
+        guard input.id == current.id, input.epoch == current.epoch, formatting != self.formatting else {
+            return
+        }
+        self.formatting = formatting
+    }
+
+    func format(_ action: NoteEditAction) {
+        windowController.format(action)
+    }
+
+    /// Collapsing takes the heading button with it, so its menu cannot outlive it.
+    func toggleFormattingBar() {
+        guard showsFormattingBar else { return }
+        closeHeadingMenu()
+        // Explicit, because the chord changes this from outside any view's transaction.
+        withAnimation(Self.barMotion) { isFormattingBarExpanded.toggle() }
+        saveFormattingBarExpanded(isFormattingBarExpanded)
+    }
+
+    private static var barMotion: Animation? {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            ? nil : Theme.MenuMotion.chevronAnimation
+    }
+
+    func toggleHeadingMenu() {
+        guard !headingMenuWasOpenAtPress else {
+            headingMenuWasOpenAtPress = false
+            return
+        }
+        guard !isHeadingMenuPresented else { return closeHeadingMenu() }
+        isHeadingMenuPresented = true
+        windowController.presentHeadingMenu(headingMenuController)
+    }
+
+    func chooseHeading(_ level: Int) {
+        closeHeadingMenu()
+        format(.setHeading(level: level))
+    }
+
+    func closeHeadingMenu() {
+        guard isHeadingMenuPresented else { return }
+        isHeadingMenuPresented = false
+        headingMenuController.hide()
+    }
+
+    func noteWindowMouseDown() {
+        headingMenuWasOpenAtPress = isHeadingMenuPresented
+        closeHeadingMenu()
+    }
+
     func editorReady(_ textView: NoteTextView) {
         windowController.editorReady(textView)
     }
 
     private func request(_ presentation: Presentation) {
         guard settings.notesEnabled else { return }
+        closeHeadingMenu()
         pendingPresentation = presentation
         guard loadTask == nil else { return }
         let generation = enablementGeneration
         loadTask = Task { [weak self] in
             guard let self else { return }
             // Create is its own load: the collection it would wait for is the one it adds to.
-            let loaded = presentation == .create ? await store.create() : await store.start()
+            let loaded =
+                if case .create(let source) = presentation {
+                    await store.create(source: source)
+                } else {
+                    await store.start()
+                }
             guard generation == enablementGeneration else {
                 if !settings.notesEnabled { store.stop() }
                 return
@@ -310,7 +436,9 @@ final class NotesCoordinator {
             loadTask = nil
             guard loaded, settings.notesEnabled, !Task.isCancelled else { return }
             // The note this task just made satisfies a create still pending; never make a second.
-            if presentation == .create, pendingPresentation == .create {
+            if case .create = presentation,
+                pendingPresentation == presentation || pendingPresentation == .create(source: "")
+            {
                 pendingPresentation = .editor
             }
             guard let next = pendingPresentation else { return }
@@ -324,18 +452,25 @@ final class NotesCoordinator {
         case .editor:
             closeSwitcher()
             windowController.show(focusEditor: true)
-        case .create:
-            let generation = presentationGeneration
-            guard await store.create(), settings.notesEnabled, !Task.isCancelled,
-                generation == presentationGeneration
-            else { return }
-            closeSwitcher()
-            windowController.show(focusEditor: true)
+        case .create(let source):
+            await showEditor { await store.create(source: source) }
+        case .note(let id):
+            await showEditor { await store.select(id) }
         case .search:
             // The switcher hangs off the note window, so that window has to exist first.
             windowController.show(focusEditor: false)
             openSwitcher()
         }
+    }
+
+    /// Shown only if the change landed and no newer show or hide claimed the window meanwhile.
+    private func showEditor(after change: () async -> Bool) async {
+        let generation = presentationGeneration
+        guard await change(), settings.notesEnabled, !Task.isCancelled,
+            generation == presentationGeneration
+        else { return }
+        closeSwitcher()
+        windowController.show(focusEditor: true)
     }
 
     /// A newer show or hide retires an older operation's right to put what it loaded on screen.
@@ -366,21 +501,21 @@ final class NotesCoordinator {
             switch issue {
             case .load(let failure):
                 let retry = await core.reportFailure(
-                    title: "Couldn't Open Note",
+                    title: String(localized: "Couldn't Open Note"),
                     message: failure.localizedDescription,
                     symbol: "text.page",
-                    recovery: "Retry")
+                    recovery: String(localized: "Retry"))
                 if retry { _ = await store.reload() }
             case .save(let failure):
                 let retry = await core.reportFailure(
-                    title: "Couldn't Save Note",
+                    title: String(localized: "Couldn't Save Note"),
                     message: failure.localizedDescription,
                     symbol: "text.page",
-                    recovery: "Retry")
+                    recovery: String(localized: "Retry"))
                 if retry { await store.retrySave() }
             case .operation(let failure):
                 _ = await core.reportFailure(
-                    title: "Couldn't Update Note",
+                    title: String(localized: "Couldn't Update Note"),
                     message: failure.localizedDescription,
                     symbol: "text.page",
                     recovery: nil)

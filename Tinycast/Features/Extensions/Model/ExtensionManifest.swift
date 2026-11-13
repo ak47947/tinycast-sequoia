@@ -1,25 +1,11 @@
 import Foundation
 
-/// What a command renders into. Only `view` and `noView` run today; the rest are recognised so the
-/// launcher can label them and explain why they don't open.
 enum ExtensionCommandMode: String, Sendable, Codable {
     case view
     case noView = "no-view"
     case menuBar = "menu-bar"
-
-    /// The string the JS runtime expects (it only distinguishes mounted from headless).
-    var runtimeName: String { self == .view ? "view" : "no-view" }
-
-    var isSupported: Bool { self != .menuBar }
-
-    var unsupportedReason: String? {
-        self == .menuBar
-            ? "Menu bar commands aren't supported yet — Tinycast only runs view and no-view commands."
-            : nil
-    }
 }
 
-/// One entry from a manifest's `preferences` array.
 struct ExtensionPreferenceSchema: Sendable, Hashable {
     enum Kind: String, Sendable {
         case textfield
@@ -48,13 +34,19 @@ struct ExtensionPreferenceSchema: Sendable, Hashable {
     let kind: Kind
     let required: Bool
     let options: [Option]
-    /// Already resolved for macOS: a manifest default can be platform-keyed
-    /// (`{"macOS": "/var/run/docker.sock", "Windows": "…"}`).
+    /// Already resolved for macOS: a manifest default can be platform-keyed.
     let defaultValue: ExtensionPreferenceValue?
 
-    /// The value to use when the user hasn't set one — falls back to a type-appropriate empty.
     var effectiveDefault: ExtensionPreferenceValue {
         defaultValue ?? (kind == .checkbox ? .bool(false) : .string(""))
+    }
+
+    /// An app picker reaches JS as an Application object, and an unset one as no key at all.
+    func runtimeValue(_ stored: ExtensionPreferenceValue?) -> ExtensionPreferenceValue? {
+        let value = stored ?? effectiveDefault
+        guard kind == .appPicker else { return value }
+        let path = value.stringValue
+        return path.isEmpty ? nil : .application(path)
     }
 
     var displayTitle: String { title ?? label ?? name }
@@ -76,17 +68,24 @@ struct ExtensionPreferenceSchema: Sendable, Hashable {
     }
 }
 
-/// A preference value as it round-trips between the manifest, `UserDefaults` and JS.
 enum ExtensionPreferenceValue: Sendable, Hashable {
     case string(String)
     case bool(Bool)
     case number(Double)
+    case application(String)
 
     var jsonValue: Any {
         switch self {
         case .string(let value): return value
         case .bool(let value): return value
         case .number(let value): return value
+        case .application(let path):
+            let url = URL(filePath: path)
+            let bundle = Bundle(url: url)
+            return [
+                "name": bundle?.installedAppName ?? url.deletingPathExtension().lastPathComponent,
+                "path": path, "bundleId": bundle?.bundleIdentifier as Any? ?? NSNull()
+            ]
         }
     }
 
@@ -95,6 +94,7 @@ enum ExtensionPreferenceValue: Sendable, Hashable {
         case .string(let value): return value
         case .bool(let value): return value ? "true" : "false"
         case .number(let value): return value == value.rounded() ? String(Int(value)) : String(value)
+        case .application(let path): return path
         }
     }
 
@@ -103,6 +103,7 @@ enum ExtensionPreferenceValue: Sendable, Hashable {
         case .string(let value): return value == "true"
         case .bool(let value): return value
         case .number(let value): return value != 0
+        case .application(let path): return !path.isEmpty
         }
     }
 
@@ -146,6 +147,9 @@ struct ExtensionCommand: Sendable, Hashable, Identifiable {
     let subtitle: String?
     let description: String
     let mode: ExtensionCommandMode
+    let intervalRaw: String?
+    /// Parsed `interval`, clamped to the refresh floor; nil when the manifest sets no schedule.
+    let interval: TimeInterval?
     let keywords: [String]
     let icon: String?
     let disabledByDefault: Bool
@@ -155,9 +159,7 @@ struct ExtensionCommand: Sendable, Hashable, Identifiable {
     /// Unique within its extension; `ExtensionCommandRef` pairs it with the owner for a global id.
     var id: String { name }
 
-    /// Every declared argument must reach the command, empty string when the user left it blank — that
-    /// is Raycast's contract, and extensions lean on it: `Number(args.seconds)` is `0` for `""` but
-    /// `NaN` for `undefined`, which silently corrupts whatever they compute from it.
+    /// Raycast's contract: a blank argument arrives as empty text, since `undefined` is `NaN`.
     func completeArguments(_ given: [String: String]) -> [String: String] {
         var complete = given
         for argument in arguments where complete[argument.name] == nil {
@@ -175,6 +177,11 @@ struct ExtensionCommand: Sendable, Hashable, Identifiable {
         subtitle = dict["subtitle"] as? String
         description = dict["description"] as? String ?? ""
         mode = ExtensionCommandMode(rawValue: dict["mode"] as? String ?? "view") ?? .view
+        intervalRaw = dict["interval"] as? String
+        interval = ExtensionRefreshPolicy.parse(
+            intervalRaw,
+            floor: mode == .menuBar
+                ? ExtensionRefreshPolicy.menuBarMinimumInterval : ExtensionRefreshPolicy.minimumInterval)
         keywords = dict["keywords"] as? [String] ?? []
         icon = dict["icon"] as? String
         disabledByDefault = dict["disabledByDefault"] as? Bool ?? false
@@ -189,11 +196,15 @@ struct ExtensionManifest: Sendable, Hashable {
     let title: String
     let description: String
     let author: String
+    /// The organisation an extension is published under, when it isn't its author's own.
+    let owner: String?
     let icon: String?
     let categories: [String]
     let platforms: [String]?
     let commands: [ExtensionCommand]
     let preferences: [ExtensionPreferenceSchema]
+
+    var storeHandle: String { owner ?? author }
 
     /// `platforms` is absent on older manifests, which predate Windows support and are macOS-only.
     var supportsMacOS: Bool {
@@ -208,9 +219,10 @@ struct ExtensionManifest: Sendable, Hashable {
         var errorDescription: String? {
             switch self {
             case .unreadable(let url):
-                return "Couldn't read \(url.lastPathComponent)."
+                return String(localized: "Couldn't read \(url.lastPathComponent).")
             case .notAnExtension(let url):
-                return "\(url.lastPathComponent) doesn't contain a Raycast extension manifest."
+                return String(
+                    localized: "\(url.lastPathComponent) doesn't contain a Raycast extension manifest.")
             }
         }
     }
@@ -234,6 +246,7 @@ struct ExtensionManifest: Sendable, Hashable {
         title = json["title"] as? String ?? name
         description = json["description"] as? String ?? ""
         author = json["author"] as? String ?? ""
+        owner = json["owner"] as? String
         icon = json["icon"] as? String
         categories = json["categories"] as? [String] ?? []
         platforms = json["platforms"] as? [String]

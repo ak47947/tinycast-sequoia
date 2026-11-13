@@ -92,7 +92,6 @@ struct PaletteRowIndexTests {
         }
     }
 
-    /// Every index resolves, and resolving then inverting returns the index it started from.
     static func expectRoundTrip(_ index: PaletteRowIndex, _ label: String) {
         for flat in 0..<index.count {
             guard let row = index.row(at: flat) else {
@@ -124,7 +123,6 @@ struct PaletteRowIndexTests {
         expect(allEmptySections.count == 0, "empty sections contribute no rows")
         expect(allEmptySections.row(at: 0), nil, "empty sections resolve no index")
 
-        // Single section, no calculator card: the flat index is the section offset.
         let single = PaletteRowIndex(sectionCounts: [3])
         expect(single.count == 3, "one section of 3 is 3 rows")
         expect(single.row(at: 0), .element(section: 0, offset: 0), "index 0 is the first result")
@@ -150,7 +148,6 @@ struct PaletteRowIndexTests {
             "a card present shifts the first result's index to 1")
         expectRoundTrip(withCalc, "single section with calculator")
 
-        // A calculator card with no results is selectable on its own.
         let calcOnly = PaletteRowIndex(hasCalculator: true, sectionCounts: [])
         expect(calcOnly.count == 1, "a lone calculator card is one row")
         expect(calcOnly.row(at: 0), .calculator, "a lone calculator card is the whole list")
@@ -208,7 +205,7 @@ struct PaletteRowIndexTests {
         expect(launcherSections.index(section: 9, offset: 0), nil, "there is no tenth section")
         expectRoundTrip(launcherSections, "launcher nine sections")
 
-        // No favourites set: Applications leads, and every later section shifts up by the same amount.
+        // No favourites: Applications leads and every later section shifts up.
         let launcherNoFavorites = PaletteRowIndex(sectionCounts: [0, 12, 5, 2, 4, 6, 8, 1, 7])
         expect(
             launcherNoFavorites.row(at: 0), .element(section: 1, offset: 0),
@@ -226,7 +223,7 @@ struct PaletteRowIndexTests {
             "Quicklinks follows Applications directly once System Settings is hidden")
         expectRoundTrip(launcherHidden, "launcher with hidden categories")
 
-        // A typed query collapses the nine sections into one Results list, led by the calculator card.
+        // A typed query collapses nine sections into one list, led by the card.
         let launcherQuery = PaletteRowIndex(hasCalculator: true, sectionCounts: [9])
         expect(launcherQuery.count == 10, "the card plus nine ranked matches")
         expect(launcherQuery.row(at: 0), .calculator, "a typed calculation leads the results")
@@ -294,7 +291,7 @@ struct PaletteRowIndexTests {
         expect(sections.index(section: 0, offset: 2), nil, "an offset past a section's rows is nothing")
         expect(sections.index(section: 0, offset: -1), nil, "a negative offset is nothing")
 
-        // The uninstall screen: one flat section, no calculator card, a summary header taking no index.
+        // The uninstall screen: one flat section, no card, a header taking no index.
         let uninstall = PaletteRowIndex(sectionCounts: [4])
         expect(uninstall.count == 4, "the uninstall screen indexes its candidates alone")
         expect(uninstall.row(at: 0), .element(section: 0, offset: 0), "the first candidate leads")
@@ -397,7 +394,6 @@ struct PaletteRowIndexTests {
             }
         }
 
-        // Exhaustive: over a spread of shapes, every flat index maps 1:1 onto visible row order.
         for hasCalculator in [false, true] {
             for a in 0...3 {
                 for b in 0...3 {

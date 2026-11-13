@@ -1,98 +1,68 @@
-# Tinycast
-
-A tiny, fully native macOS launcher — the essentials, without the bloat.
+<h1 align="center">
+  <a href="https://tinycast.dev"><img src="docs/images/icon.png" alt="Tinycast app icon" width="128" height="128"></a><br>
+  Tinycast
+</h1>
 
 <p align="center">
-  <a href="https://discord.gg/v2Eeb4QQy3">
-    <img alt="Join the Tinycast Discord"
-         src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=flat&logo=discord&logoColor=white"></a>
-  <a href="mailto:iabueammar@gmail.com?subject=Hiring%20enquiry">
-    <img alt="Hire me — iabueammar@gmail.com"
-         src="https://img.shields.io/badge/Hire%20me-Let's%20talk-111111?style=flat&logo=gmail&logoColor=white"></a>
-  <a href="LICENSE">
-    <img alt="License: AGPL-3.0"
-         src="https://img.shields.io/badge/License-AGPL--3.0-3DA639?style=flat"></a>
+  A native macOS launcher for everyday productivity. Lightweight and open source.
 </p>
 
 <p align="center">
-  <img src="docs/screenshot.png" alt="Tinycast command palette" width="720">
+  <a href="https://tinycast.dev"><strong>Website</strong></a> ·
+  <a href="#install"><strong>Install</strong></a> ·
+  <a href="https://tinycast.dev/docs/"><strong>Docs</strong></a> ·
+  <a href="https://tinycast.dev/support"><strong>Support</strong></a>
 </p>
 
-Around **3 MB on disk** and **under 100 MB of RAM** — no Electron, no telemetry, no background
-CPU churn. Just SwiftUI + AppKit with zero dependencies. It's fast because there's nothing to it.
+<p align="center">
+  <a href="https://github.com/abue-ammar/tinycast/releases/latest"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/release/abue-ammar/tinycast.svg?variant=ghost&amp;font=geist-mono&amp;mode=dark&amp;label=RELEASE&amp;logo=lu:Tag&amp;valueColor=60A5FA" /><img alt="Latest release" src="https://shieldcn.dev/github/release/abue-ammar/tinycast.svg?variant=ghost&amp;font=geist-mono&amp;mode=light&amp;label=RELEASE&amp;logo=lu:Tag&amp;valueColor=2563EB" /></picture></a>
+  <a href="https://github.com/abue-ammar/tinycast/releases"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/downloads/abue-ammar/tinycast.svg?variant=ghost&amp;font=geist-mono&amp;mode=dark&amp;label=DOWNLOADS&amp;logo=lu:CloudDownload&amp;valueColor=A78BFA" /><img alt="Total downloads" src="https://shieldcn.dev/github/downloads/abue-ammar/tinycast.svg?variant=ghost&amp;font=geist-mono&amp;mode=light&amp;label=DOWNLOADS&amp;logo=lu:CloudDownload&amp;valueColor=7C3AED" /></picture></a>
+  <a href="https://github.com/abue-ammar/tinycast/actions/workflows/release.yml"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/ci/abue-ammar/tinycast.svg?variant=ghost&amp;font=geist-mono&amp;mode=dark&amp;workflow=release.yml&amp;label=BUILD&amp;logo=lu:Hammer&amp;valueColor=4ADE80" /><img alt="Release build status" src="https://shieldcn.dev/github/ci/abue-ammar/tinycast.svg?variant=ghost&amp;font=geist-mono&amp;mode=light&amp;workflow=release.yml&amp;label=BUILD&amp;logo=lu:Hammer&amp;valueColor=16A34A" /></picture></a>
+  <a href="https://discord.gg/v2Eeb4QQy3"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/DISCORD-JOIN.svg?variant=ghost&amp;font=geist-mono&amp;mode=dark&amp;logo=discord&amp;valueColor=A5B4FC" /><img alt="Join the Tinycast Discord" src="https://shieldcn.dev/badge/DISCORD-JOIN.svg?variant=ghost&amp;font=geist-mono&amp;mode=light&amp;logo=discord&amp;valueColor=5865F2" /></picture></a>
+  <br>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/MACOS-26%2B.svg?variant=ghost&amp;font=geist-mono&amp;mode=dark&amp;logo=apple" /><img alt="macOS 26 or later" src="https://shieldcn.dev/badge/MACOS-26%2B.svg?variant=ghost&amp;font=geist-mono&amp;mode=light&amp;logo=apple" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/SWIFT-6.svg?variant=ghost&amp;font=geist-mono&amp;mode=dark&amp;logo=swift&amp;valueColor=FB923C" /><img alt="Swift 6" src="https://shieldcn.dev/badge/SWIFT-6.svg?variant=ghost&amp;font=geist-mono&amp;mode=light&amp;logo=swift&amp;valueColor=EA580C" /></picture>
+  <a href="LICENSE"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/LICENSE-AGPL--3.0.svg?variant=ghost&amp;font=geist-mono&amp;mode=dark&amp;logo=lu:Scale" /><img alt="License: AGPL-3.0" src="https://shieldcn.dev/badge/LICENSE-AGPL--3.0.svg?variant=ghost&amp;font=geist-mono&amp;mode=light&amp;logo=lu:Scale" /></picture></a>
+</p>
 
-It also **runs Raycast extensions** — the real ones, rendered as native SwiftUI. No Node.js, no
-browser: JavaScriptCore ships with macOS, so that costs no extra binary size.
+<p align="center">
+  <img src="docs/screenshot.jpg" alt="Tinycast command palette">
+</p>
 
-## Features
+Built with SwiftUI and AppKit. No dependencies, no Electron, no telemetry. It runs your Raycast
+extensions, too.
 
-- **App launcher** — fuzzy-search and launch anything, pin favorites, see what's running, quit an app
-  or every app at once.
-- **Custom commands** — run named shell commands through fuzzy search or their own global hotkeys.
-- **Calculator** — do math, unit, live currency and crypto conversions inline, right in the palette.
-- **Clipboard history** — text and images, searchable, pasted back into the app you were using.
-- **Snippets** — reusable Markdown templates with dynamic placeholders, arguments, nested references
-  and optional keyword expansion.
-- **Global hotkey** — one shortcut summons the palette from anywhere.
-- **Per-app hotkeys** — bind a key to an app; press it to toggle (focus/hide).
-- **Raycast extensions** — run the ones you already have natively, rendered as SwiftUI.
+[Explore all features →](https://tinycast.dev/#features)
+
+For anything private, feel free to email [iabueammar@gmail.com](mailto:iabueammar@gmail.com).
 
 ## Install
 
+> This branch is the **macOS 15 (Sequoia) channel**: upstream `v0.12.11` with a 15.0 deployment
+> target, native vibrancy instead of Liquid Glass, and Apple Intelligence disabled. Build and install
+> instructions are in [compat/README.md](compat/README.md). The rest of this README describes the
+> upstream macOS 26 mainline.
+
+On an Apple silicon Mac with macOS 26 or newer (upstream mainline):
+
 ```sh
-brew trust --tap abue-ammar/tinycast   # required for third-party taps
-brew tap abue-ammar/tinycast
-brew install --cask tinycast          # stable
-brew install --cask tinycast@beta     # beta  (installs side-by-side)
-brew install --cask tinycast-sequoia  # stable channel  (macOS 15 Sequoia)
+brew install --cask tinycast
+brew install --cask tinycast@beta
 ```
 
-Tinycast also runs on macOS 15 Sequoia — install the `tinycast-sequoia` cask above.
+- **DMG:** notarized, download from [Releases](https://github.com/abue-ammar/tinycast/releases). Drag `Tinycast.app` to `/Applications`.
+- **Intel Mac:** install from [Homebrew tap](https://github.com/abue-ammar/homebrew-tinycast).
 
-Each channel is a separate app (`Tinycast.app`, `Tinycast Beta.app`) with its own settings and
-permissions, so you can run stable next to the beta.
+## Support
 
-Tinycast is self-signed. Installing via Homebrew clears the macOS quarantine flag for you
-automatically on every install and update, so there's nothing to run. (If you download the DMG
-directly from Releases instead, clear it once: `xattr -dr com.apple.quarantine
-"/Applications/Tinycast.app"`.)
+Tinycast is free and stays free. If it earns a place on your Mac, consider supporting its
+development. Thank you!
 
-## Permissions
-
-**Accessibility** — needed when Tinycast pastes or expands text into another app, and the only
-permission snippet keyword expansion needs. You're prompted when you first use a feature that needs
-it; grant access in **System Settings → Privacy & Security → Accessibility**. Snippets ship
-disabled, and keystrokes are matched locally, never stored and never sent anywhere.
-
-## Using it
-
-1. Open **Settings → General** and record a global shortcut to summon Tinycast.
-2. Press it anywhere → the palette floats in. Type to filter, **↵** to launch.
-3. **Tab** switches between Apps and Clipboard; **↑/↓** move, **Esc** dismisses.
-4. **Settings → Shortcuts** — search an app or custom command and record a global shortcut.
-5. **Settings → Snippets** — enable the feature, then create templates with expansion keywords.
-
-## Building from source
-
-See **[docs/development.md](docs/development.md)** for the toolchain, build, packaging, release and
-website workflows. **[docs/](docs/README.md)** indexes everything else — architecture, engineering
-standards, the design system and one document per feature.
-
-## Contributing
-
-> [!IMPORTANT]
-> **Open an issue before you write code — this is mandatory.** Get the bug or the feature agreed on
-> first; discussing it in the issue (or on [Discord](https://discord.gg/v2Eeb4QQy3)) is strongly
-> encouraged. A PR with no agreed issue behind it gets closed however good the patch is, and the
-> work is wasted. Typo and docs-only fixes are the one exception.
-
-Read **[CONTRIBUTING.md](CONTRIBUTING.md)** first — it covers the memory budget every PR is held to,
-the before/after video requirement for visual changes, and why features get declined. Every PR fills
-in the **[pull request template](.github/PULL_REQUEST_TEMPLATE.md)**. Security issues go through
-[SECURITY.md](SECURITY.md), not the issue tracker.
-
-Questions, ideas, or just want to follow along? **[Join the Discord](https://discord.gg/v2Eeb4QQy3)**.
+<p align="center">
+  <a href="https://tinycast.dev/support"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/SUPPORT-CARD.svg?variant=outline&amp;size=lg&amp;font=geist-mono&amp;mode=dark&amp;logo=lu:CircleDollarSign&amp;logoColor=A78BFA&amp;valueColor=A78BFA" /><img alt="Support by card payment" src="https://shieldcn.dev/badge/SUPPORT-CARD.svg?variant=outline&amp;size=lg&amp;font=geist-mono&amp;mode=light&amp;logo=lu:CircleDollarSign&amp;logoColor=7C3AED&amp;valueColor=7C3AED" /></picture></a>
+  <a href="https://tinycast.dev/support?method=crypto"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/SUPPORT-CRYPTO.svg?variant=outline&amp;size=lg&amp;font=geist-mono&amp;mode=dark&amp;logo=lu:Bitcoin&amp;logoColor=FBBF24&amp;valueColor=FBBF24" /><img alt="Support with crypto" src="https://shieldcn.dev/badge/SUPPORT-CRYPTO.svg?variant=outline&amp;size=lg&amp;font=geist-mono&amp;mode=light&amp;logo=lu:Bitcoin&amp;logoColor=B45309&amp;valueColor=B45309" /></picture></a>
+</p>
 
 ## License
 
-[AGPL-3.0](LICENSE)
+Tinycast is licensed under the [AGPL-3.0 license](LICENSE).

@@ -1,11 +1,16 @@
 import SwiftUI
 
 struct FileSearchList: View {
+
+    @Environment(\.metrics) private var metrics
+    let title: String
     let results: [FileSearchResult]
     let selectedID: FileSearchResult.ID?
     let scroll: ScrollIntent
+    let onSelect: (FileSearchResult) -> Void
     let onActivate: (FileSearchResult) -> Void
     let onActions: (FileSearchResult) -> Void
+    let onDropped: () -> Void
 
     private var firstRowSelected: Bool {
         selectedID != nil && selectedID == results.first?.id
@@ -15,18 +20,21 @@ struct FileSearchList: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    SectionHeader(title: "Results", isFirst: true)
+                    SectionHeader(title: title, isFirst: true)
                     ForEach(results) { result in
                         FileSearchRow(result: result, selected: result.id == selectedID)
                             .selectionFrame(result.id == selectedID)
                             .contentShape(Rectangle())
-                            .onTapGesture { onActivate(result) }
+                            .onRowClick(
+                                select: { onSelect(result) }, activate: { onActivate(result) },
+                                drag: result.rowDrag(dropped: onDropped)
+                            )
                             .onRightClick { onActions(result) }
                     }
                 }
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.top, Theme.Spacing.xs)
-                .padding(.bottom, Theme.Spacing.md)
+                .padding(.horizontal, metrics.spacing.md)
+                .padding(.top, metrics.spacing.xs)
+                .padding(.bottom, metrics.spacing.md)
                 .hideNativeScrollers()
                 .scrollOriginAnchor()
             }
@@ -39,15 +47,31 @@ struct FileSearchList: View {
     }
 }
 
-private struct FileSearchRow: View {
+extension FileSearchResult {
+    /// The row's own fitted tile, which is warm by the time a pointer can reach it.
+    func rowDrag(dropped: @escaping () -> Void) -> RowDrag {
+        RowDrag(item: { .file(url, image: IconCache.cachedFitted(forFile: id)) }, dropped: dropped)
+    }
+}
+
+struct FileSearchRow: View {
+
+    @Environment(\.metrics) private var metrics
     let result: FileSearchResult
     let selected: Bool
+    let showsLocation: Bool
+    let slot: Character?
+    @Environment(PaletteState.self) private var palette
     @State private var image: NSImage?
     @State private var hovered = false
 
-    init(result: FileSearchResult, selected: Bool) {
+    init(
+        result: FileSearchResult, selected: Bool, showsLocation: Bool = false, slot: Character? = nil
+    ) {
         self.result = result
         self.selected = selected
+        self.showsLocation = showsLocation
+        self.slot = slot
         _image = State(initialValue: IconCache.cachedFitted(forFile: result.id))
     }
 
@@ -57,31 +81,54 @@ private struct FileSearchRow: View {
         return .clear
     }
 
+    /// A folder is named by where it sits: half the hits are some `src` or `Tinycast`.
+    private var label: Text {
+        guard !showsLocation, result.isDirectory, !result.parentName.isEmpty else {
+            return Text(result.name)
+        }
+        let parent = Text(verbatim: "\(result.parentName)/").foregroundStyle(.secondary)
+        return Text("\(parent)\(result.name)")
+    }
+
     var body: some View {
-        HStack(spacing: Theme.Spacing.lg) {
+        HStack(spacing: metrics.spacing.lg) {
             Group {
                 if let image {
                     Image(nsImage: image).resizable()
                 } else {
-                    RoundedRectangle(cornerRadius: Theme.Radius.thumbnail, style: .continuous)
+                    RoundedRectangle(cornerRadius: metrics.radius.thumbnail, style: .continuous)
                         .fill(Theme.Colors.iconPlaceholder)
                 }
             }
-            .frame(width: Theme.Size.rowIcon, height: Theme.Size.rowIcon)
-            Text(result.name)
-                .font(Theme.Typography.rowTitle)
-                .lineLimit(1)
-            Spacer(minLength: Theme.Spacing.md)
-            Text(result.parentPath)
-                .font(Theme.Typography.rowTrailing)
-                .foregroundStyle(.secondary)
+            .frame(width: metrics.size.resultRowIcon, height: metrics.size.resultRowIcon)
+            label
+                .font(metrics.typography.rowTitle)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .layoutPriority(1)
+            if showsLocation {
+                Text(result.parentPath)
+                    .font(metrics.typography.rowTrailing)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+            if let slot, palette.commandHeld {
+                HStack(spacing: metrics.spacing.xxs) {
+                    KeyCapChip(text: "⌘", style: .outline)
+                    KeyCapChip(text: String(slot), style: .outline)
+                }
+            } else if showsLocation {
+                Text(result.isDirectory ? "Folder" : "File")
+                    .font(metrics.typography.rowTrailing)
+                    .foregroundStyle(.secondary)
+            }
         }
-        .padding(.horizontal, Theme.Spacing.md)
-        .padding(.vertical, Theme.Spacing.sm)
+        .padding(.horizontal, metrics.spacing.md)
+        .padding(.vertical, metrics.spacing.sm)
         .background(
-            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+            RoundedRectangle(cornerRadius: metrics.radius.row, style: .continuous)
                 .fill(fill)
         )
         .armedHover($hovered)

@@ -5,9 +5,41 @@
 
 import { hostCall, hostCallSync } from "./host.js";
 import { Buffer, bufferModule } from "./buffer.js";
+import { EventEmitter } from "./events.js";
 import { base64ToBytes, bytesToBase64, reportUncaught, utf8Decode, utf8Encode } from "./polyfills.js";
-import { URL, URLSearchParams } from "./url.js";
+import {
+  Duplex,
+  PassThrough,
+  Readable,
+  Stream,
+  Transform,
+  Writable,
+  finished,
+  finishedPromise,
+  pipeline,
+  pipelinePromise,
+} from "./streams.js";
+import { ReadableStream, TransformStream, WritableStream } from "./web-streams.js";
+import { fileURLToPath, pathToFileURL, URL, URLSearchParams } from "./url.js";
 import { punycode } from "./punycode.js";
+import { upgradeToWebSocket } from "./websocket.js";
+import { dgram } from "./dgram.js";
+
+// ─── Unsupported-module exports ─────────────────────────────────────
+
+/// Node's function exports per module: a lazy member survives `__toESM` only as an own key.
+const UNSUPPORTED_EXPORTS = {
+  net: ["BlockList", "SocketAddress", "connect", "createConnection", "createServer", "isIP", "isIPv4", "isIPv6", "Server", "Socket", "Stream"],
+  tls: ["getCiphers", "checkServerIdentity", "convertALPNProtocols", "createSecureContext", "SecureContext", "TLSSocket", "Server", "createServer", "connect"],
+  dns: ["lookup", "lookupService", "Resolver", "getServers", "setServers", "getDefaultResultOrder", "setDefaultResultOrder", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse"],
+  vm: ["Script", "createContext", "createScript", "runInContext", "runInNewContext", "runInThisContext", "isContext", "compileFunction", "measureMemory"],
+  readline: ["Interface", "clearLine", "clearScreenDown", "createInterface", "cursorTo", "emitKeypressEvents", "moveCursor"],
+  worker_threads: ["MessagePort", "MessageChannel", "markAsUncloneable", "markAsUntransferable", "isMarkedAsUntransferable", "moveMessagePortToContext", "receiveMessageOnPort", "postMessageToThread", "Worker", "BroadcastChannel", "setEnvironmentData", "getEnvironmentData"],
+  http2: ["connect", "createServer", "createSecureServer", "getDefaultSettings", "getPackedSettings", "getUnpackedSettings", "performServerHandshake", "Http2ServerRequest", "Http2ServerResponse"],
+  domain: ["Domain", "createDomain", "create"],
+  diagnostics_channel: ["channel", "hasSubscribers", "subscribe", "unsubscribe", "tracingChannel", "Channel"],
+  "stream/consumers": ["arrayBuffer", "blob", "buffer", "text", "json"],
+};
 
 // ─── path ───────────────────────────────────────────────────────────
 
@@ -102,7 +134,7 @@ path.win32 = path;
 
 // ─── process ────────────────────────────────────────────────────────
 
-let bootEnvironment = { platform: "darwin", arch: "arm64", env: {}, cwd: "/", homedir: "/", tmpdir: "/tmp", execPath: "" };
+let bootEnvironment = { platform: "darwin", arch: "arm64", env: {}, cwd: "/", homedir: "/", tmpdir: "/tmp", execPath: "", groups: [] };
 
 export function configureNodeShims(info) {
   bootEnvironment = { ...bootEnvironment, ...info };
@@ -113,13 +145,31 @@ export function configureNodeShims(info) {
 
 const processListeners = new Map();
 
+const SIGNALS = {
+  SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGIOT: 6, SIGFPE: 8, SIGKILL: 9,
+  SIGBUS: 10, SIGSEGV: 11, SIGSYS: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGURG: 16, SIGSTOP: 17,
+  SIGTSTP: 18, SIGCONT: 19, SIGCHLD: 20, SIGTTIN: 21, SIGTTOU: 22, SIGIO: 23, SIGXCPU: 24, SIGXFSZ: 25,
+  SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGINFO: 29, SIGUSR1: 30, SIGUSR2: 31,
+};
+
+function signalNumber(signal) {
+  if (typeof signal === "number") return signal;
+  if (Object.hasOwn(SIGNALS, signal)) return SIGNALS[signal];
+  const error = new TypeError(`Unknown signal: ${signal}`);
+  error.code = "ERR_UNKNOWN_SIGNAL";
+  throw error;
+}
+
 const process = {
+  // Axios gates its Node http adapter on this tag; untagged, axios takes the fetch path.
+  [Symbol.toStringTag]: "process",
   platform: "darwin",
   arch: "arm64",
   version: "v22.0.0",
   versions: { node: "22.0.0", v8: "12.0.0", tinycast: "1" },
   argv: ["node", "extension"],
   argv0: "node",
+  execArgv: [],
   execPath: "",
   pid: 1,
   ppid: 0,
@@ -129,11 +179,20 @@ const process = {
   stderr: { write: (text) => console.error(String(text).replace(/\n$/, "")), isTTY: false, columns: 80 },
   stdin: { on: () => {}, resume: () => {}, pause: () => {}, isTTY: false },
   cwd: () => bootEnvironment.cwd,
+  getuid: () => bootEnvironment.uid,
+  getgid: () => bootEnvironment.gid,
+  geteuid: () => bootEnvironment.euid,
+  getegid: () => bootEnvironment.egid,
+  getgroups: () => [...bootEnvironment.groups],
   chdir: () => {
     throw new Error("process.chdir is not supported in Tinycast extensions.");
   },
   exit: () => {
     throw new Error("process.exit is not supported in Tinycast extensions.");
+  },
+  kill(pid, signal = "SIGTERM") {
+    hostCallSync("proc", "kill", [Number(pid), signalNumber(signal)]);
+    return true;
   },
   nextTick: (callback, ...args) => {
     queueMicrotask(() => {
@@ -165,6 +224,9 @@ const process = {
   once(event, listener) {
     return process.on(event, listener);
   },
+  addListener(event, listener) {
+    return process.on(event, listener);
+  },
   off(event, listener) {
     processListeners.get(event)?.delete(listener);
     return process;
@@ -194,6 +256,15 @@ const process = {
 
 // ─── os ─────────────────────────────────────────────────────────────
 
+/// The host sends a flat list because a JSON object would lose Node's interface order.
+function networkInterfaces() {
+  const interfaces = {};
+  for (const { name, ...address } of hostCallSync("os", "networkInterfaces", [])) {
+    (interfaces[name] ??= []).push(address);
+  }
+  return interfaces;
+}
+
 const os = {
   EOL: "\n",
   platform: () => "darwin",
@@ -207,17 +278,18 @@ const os = {
     username: bootEnvironment.username || "",
     homedir: bootEnvironment.homedir,
     shell: bootEnvironment.shell || "/bin/zsh",
-    uid: 501,
-    gid: 20,
+    uid: bootEnvironment.uid,
+    gid: bootEnvironment.gid,
   }),
-  cpus: () => Array.from({ length: bootEnvironment.cpus || 8 }, () => ({ model: "Apple Silicon", speed: 0, times: {} })),
+  cpus: () => hostCallSync("os", "cpus", []),
   totalmem: () => bootEnvironment.totalmem || 0,
-  freemem: () => 0,
-  uptime: () => 0,
-  networkInterfaces: () => ({}),
+  freemem: () => hostCallSync("os", "freemem", []),
+  uptime: () => hostCallSync("os", "uptime", []),
+  loadavg: () => hostCallSync("os", "loadavg", []),
+  networkInterfaces,
   endianness: () => "LE",
   devNull: "/dev/null",
-  constants: { signals: {}, errno: {} },
+  constants: { signals: SIGNALS, errno: {} },
 };
 
 // ─── fs ─────────────────────────────────────────────────────────────
@@ -290,14 +362,53 @@ class Dirent {
 }
 
 function fsPath(input) {
-  if (input instanceof URL) return decodeURIComponent(input.pathname);
+  // Node validates URL inputs through fileURLToPath: a non-file scheme (say a VS Code
+  // vscode-remote:// workspace URI) must throw ERR_INVALID_URL_SCHEME rather than quietly
+  // degrading to its pathname — extensions like Search Recent Projects guard on that failure.
+  if (input instanceof URL) return fileURLToPath(input);
   if (input instanceof Uint8Array) return utf8Decode(input);
   return String(input);
 }
 
-const fs = {
-  constants: { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1 },
+// Node takes a mode as a number or as an octal string, and Raycast's Swift wrapper passes "755".
+function fsMode(mode) {
+  const parsed = typeof mode === "string" ? Number.parseInt(mode, 8) : Math.trunc(Number(mode));
+  if (!Number.isFinite(parsed)) throw new TypeError(`Invalid file mode: ${mode}`);
+  return parsed & 0o7777;
+}
 
+const FILE_STREAM_CHUNK = 64 * 1024;
+const FS_CONSTANTS = { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1, O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_APPEND: 8, O_NOFOLLOW: 256, O_CREAT: 512, O_TRUNC: 1024, O_EXCL: 2048 };
+const { O_RDONLY, O_WRONLY, O_RDWR, O_APPEND, O_CREAT, O_TRUNC, O_EXCL } = FS_CONSTANTS;
+const OPEN_FLAGS = {
+  r: O_RDONLY, "r+": O_RDWR,
+  w: O_WRONLY | O_CREAT | O_TRUNC, "w+": O_RDWR | O_CREAT | O_TRUNC,
+  wx: O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, "wx+": O_RDWR | O_CREAT | O_TRUNC | O_EXCL,
+  a: O_WRONLY | O_CREAT | O_APPEND, "a+": O_RDWR | O_CREAT | O_APPEND,
+  ax: O_WRONLY | O_CREAT | O_APPEND | O_EXCL, "ax+": O_RDWR | O_CREAT | O_APPEND | O_EXCL,
+};
+
+const fs = {
+  constants: FS_CONSTANTS,
+
+  openSync(file, flags = "r", mode = 0o666) {
+    const value = typeof flags === "number" ? flags : OPEN_FLAGS[flags];
+    if (value === undefined) throw new TypeError(`Invalid file flags: ${flags}`);
+    return hostCallSync("fs", "open", [fsPath(file), value, fsMode(mode)]);
+  },
+  closeSync(fd) {
+    hostCallSync("fs", "close", [fd]);
+  },
+  readSync(fd, buffer, offset = 0, length = buffer.length - offset, position = null) {
+    if (offset < 0 || length < 0 || offset + length > buffer.length) throw new RangeError("Read exceeds buffer bounds");
+    const bytes = base64ToBytes(hostCallSync("fs", "read", [fd, length, position]));
+    buffer.set(bytes, offset);
+    return bytes.length;
+  },
+  writeSync(fd, buffer, offset = 0, length = buffer.length - offset, position = null) {
+    if (offset < 0 || length < 0 || offset + length > buffer.length) throw new RangeError("Write exceeds buffer bounds");
+    return hostCallSync("fs", "write", [fd, bytesToBase64(buffer.subarray(offset, offset + length)), position]);
+  },
   readFileSync(file, options) {
     return decodeFileResult(hostCallSync("fs", "readFile", [fsPath(file)]), options);
   },
@@ -366,20 +477,122 @@ const fs = {
   mkdtempSync(prefix) {
     return hostCallSync("fs", "mkdtemp", [String(prefix)]);
   },
-  chmodSync() {},
-  utimesSync() {},
+  chmodSync(file, mode) {
+    hostCallSync("fs", "chmod", [fsPath(file), fsMode(mode)]);
+  },
+  utimesSync(file, atime, mtime) {
+    const times = [atime, mtime].map((time) => {
+      const seconds = time instanceof Date ? time.getTime() / 1000 : Number(time);
+      if (!Number.isFinite(seconds)) {
+        throw Object.assign(new TypeError("Invalid file timestamp"), { code: "ERR_INVALID_ARG_VALUE" });
+      }
+      return typeof time === "number" && seconds < 0 ? Date.now() / 1000 : seconds;
+    });
+    hostCallSync("fs", "utimes", [fsPath(file), ...times]);
+  },
+  futimesSync() {},
   watch() {
     throw new Error("fs.watch is not supported in Tinycast extensions.");
   },
-  createReadStream() {
-    throw new Error("fs.createReadStream is not supported in Tinycast extensions.");
+  createReadStream(file, options) {
+    const target = fsPath(file);
+    const encoding = typeof options === "string" ? options : options?.encoding;
+    const span = options?.highWaterMark ?? FILE_STREAM_CHUNK;
+    let offset = options?.start ?? 0;
+    const stream = new Readable({
+      highWaterMark: span,
+      read() {
+        try {
+          const bytes = base64ToBytes(hostCallSync("fs", "readRange", [target, offset, span]));
+          offset += bytes.length;
+          this.push(bytes.length ? Buffer.from(bytes) : null);
+        } catch (error) {
+          this.destroy(error);
+        }
+      },
+    });
+    stream.path = target;
+    if (encoding) stream.setEncoding(encoding);
+    return stream;
   },
-  createWriteStream() {
-    throw new Error("fs.createWriteStream is not supported in Tinycast extensions.");
+  // The host has no file handles, so each write is its own call: create once, then append.
+  createWriteStream(file, options) {
+    const target = fsPath(file);
+    let append = options?.flags === "a" || options?.flags === "a+";
+    const put = (data) => {
+      hostCallSync("fs", "writeFile", [target, bytesToBase64(data), append]);
+      append = true;
+    };
+    const stream = new Writable({
+      write(chunk, encoding, callback) {
+        const data = typeof chunk === "string" ? Buffer.from(chunk, encoding) : chunk;
+        try {
+          put(data);
+        } catch (error) {
+          return callback(error);
+        }
+        stream.bytesWritten += data.length;
+        callback(null);
+      },
+      final(callback) {
+        try {
+          if (!append) put(new Uint8Array(0));
+        } catch (error) {
+          return callback(error);
+        }
+        callback(null);
+      },
+    });
+    stream.bytesWritten = 0;
+    stream.path = target;
+    return stream;
+  },
+  opendirSync(dir) {
+    return new Dir(fsPath(dir), fs.readdirSync(dir, { withFileTypes: true }));
   },
   Stats,
   Dirent,
 };
+
+// The host has no directory handles, so a Dir walks a snapshot taken when it was opened.
+class Dir {
+  #entries;
+  #closed = false;
+  constructor(path, entries) {
+    this.path = path;
+    this.#entries = entries;
+  }
+  #assertOpen() {
+    if (!this.#closed) return;
+    const error = new Error("Directory handle was closed");
+    error.code = "ERR_DIR_CLOSED";
+    throw error;
+  }
+  readSync() {
+    this.#assertOpen();
+    return this.#entries.shift() ?? null;
+  }
+  read(callback) {
+    if (!callback) return (async () => this.readSync())();
+    callbackify(() => this.readSync())(callback);
+  }
+  closeSync() {
+    this.#assertOpen();
+    this.#closed = true;
+  }
+  close(callback) {
+    if (!callback) return (async () => this.closeSync())();
+    callbackify(() => this.closeSync())(callback);
+  }
+  async *[Symbol.asyncIterator]() {
+    try {
+      for (let entry = this.readSync(); entry; entry = this.readSync()) yield entry;
+    } finally {
+      if (!this.#closed) this.closeSync();
+    }
+  }
+}
+fs.Dir = Dir;
 
 // Callback forms: run the same sync host call, hand the result back on a microtask.
 function callbackify(syncFn) {
@@ -398,12 +611,17 @@ function callbackify(syncFn) {
 }
 
 for (const [name, sync] of [
+  ["open", fs.openSync],
+  ["close", fs.closeSync],
+  ["futimes", fs.futimesSync],
+  ["utimes", fs.utimesSync],
   ["readFile", fs.readFileSync],
   ["writeFile", fs.writeFileSync],
   ["appendFile", fs.appendFileSync],
   ["stat", fs.statSync],
   ["lstat", fs.lstatSync],
   ["readdir", fs.readdirSync],
+  ["opendir", fs.opendirSync],
   ["mkdir", fs.mkdirSync],
   ["rm", fs.rmSync],
   ["rmdir", fs.rmdirSync],
@@ -416,6 +634,12 @@ for (const [name, sync] of [
   ["chmod", fs.chmodSync],
 ]) {
   fs[name] = callbackify(sync);
+}
+for (const name of ["read", "write"]) {
+  fs[name] = (fd, buffer, offset, length, position, callback) => {
+    callbackify(fs[`${name}Sync`])(fd, buffer, offset, length, position,
+      (error, count) => callback(error, count, buffer));
+  };
 }
 fs.exists = (file, callback) => queueMicrotask(() => callback(fs.existsSync(file)));
 
@@ -430,6 +654,7 @@ const fsPromises = {
   stat: promisify1(fs.statSync),
   lstat: promisify1(fs.lstatSync),
   readdir: promisify1(fs.readdirSync),
+  opendir: promisify1(fs.opendirSync),
   mkdir: promisify1(fs.mkdirSync),
   rm: promisify1(fs.rmSync),
   rmdir: promisify1(fs.rmdirSync),
@@ -440,11 +665,18 @@ const fsPromises = {
   access: promisify1(fs.accessSync),
   mkdtemp: promisify1(fs.mkdtempSync),
   chmod: promisify1(fs.chmodSync),
+  utimes: promisify1(fs.utimesSync),
   constants: fs.constants,
 };
 fs.promises = fsPromises;
 
 // ─── child_process ──────────────────────────────────────────────────
+
+/// Node stringifies every defined value, so `{ ...process.env, DEBUG: 1 }` must not drop the override.
+function childEnv(env) {
+  if (env == null) return env;
+  return Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
+}
 
 function normalizeExecResult(raw, options) {
   const wantsBuffer = options?.encoding === "buffer" || options?.encoding === null;
@@ -467,7 +699,7 @@ function execError(result, command) {
 const childProcess = {
   execSync(command, options = {}) {
     const raw = hostCallSync("proc", "run", [
-      { shell: true, command: String(command), args: [], cwd: options.cwd, env: options.env, timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null },
+      { shell: true, command: String(command), args: [], cwd: options.cwd, env: childEnv(options.env), timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null },
     ]);
     const result = normalizeExecResult(raw, options);
     if (result.status !== 0) throw execError(result, command);
@@ -479,7 +711,7 @@ const childProcess = {
       args = [];
     }
     const raw = hostCallSync("proc", "run", [
-      { shell: false, command: String(file), args: args.map(String), cwd: options.cwd, env: options.env, timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null },
+      { shell: false, command: String(file), args: args.map(String), cwd: options.cwd, env: childEnv(options.env), timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null },
     ]);
     const result = normalizeExecResult(raw, options);
     if (result.status !== 0) throw execError(result, file);
@@ -491,7 +723,7 @@ const childProcess = {
       args = [];
     }
     const raw = hostCallSync("proc", "run", [
-      { shell: !!options.shell, command: String(file), args: args.map(String), cwd: options.cwd, env: options.env, timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null },
+      { shell: !!options.shell, command: String(file), args: args.map(String), cwd: options.cwd, env: childEnv(options.env), timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null, stdio: stdioDescriptors(options.stdio) },
     ]);
     const result = normalizeExecResult(raw, options);
     return { ...result, pid: 0, output: [null, result.stdout, result.stderr], error: undefined };
@@ -520,16 +752,12 @@ const childProcess = {
       file,
     );
   },
-  /// A buffered `spawn`: the child runs to completion and its output is then emitted as one `data`
-  /// event. That covers the write-query-then-read-all pattern (`@raycast/utils`' `useSQL` spawns
-  /// `sqlite3` exactly this way), which is what extensions actually do with it — true streaming would
-  /// need a duplex channel across the bridge.
   spawn(file, args = [], options = {}) {
     if (!Array.isArray(args)) {
       options = args;
       args = [];
     }
-    return new BufferedChildProcess(String(file), args.map(String), options);
+    return new ChildProcess(String(file), args.map(String), options);
   },
   fork() {
     throw new Error("child_process.fork is not supported in Tinycast extensions.");
@@ -538,6 +766,18 @@ const childProcess = {
 
 // ─── crypto ─────────────────────────────────────────────────────────
 
+function cryptoBytes(value, encoding) {
+  if (typeof value === "string") return Buffer.from(value, encoding || "utf8");
+  if (ArrayBuffer.isView(value)) return Buffer.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+  return Buffer.from(value);
+}
+
+function cryptoError(message, code, ErrorType = Error) {
+  const error = new ErrorType(message);
+  error.code = code;
+  return error;
+}
+
 class Hash {
   constructor(algorithm, hmacKeyBase64) {
     this._algorithm = String(algorithm).toLowerCase().replace(/-/g, "");
@@ -545,7 +785,7 @@ class Hash {
     this._chunks = [];
   }
   update(data, encoding) {
-    this._chunks.push(typeof data === "string" ? Buffer.from(data, encoding || "utf8") : Buffer.from(data));
+    this._chunks.push(cryptoBytes(data, encoding));
     return this;
   }
   digest(encoding) {
@@ -557,6 +797,116 @@ class Hash {
     const bytes = Buffer.from(base64ToBytes(base64));
     return encoding ? bytes.toString(encoding) : bytes;
   }
+}
+
+// CryptoKit seals and opens only full 16-byte tags, and takes no nonce shorter than 96 bits.
+const GCM_TAG_LENGTH = 16;
+const GCM_MIN_IV_LENGTH = 12;
+const GCM_AUTHENTICATION_FAILURE = "Unsupported state or unable to authenticate data";
+
+function hasValidIvLength(mode, length) {
+  if (mode === "gcm") return length >= GCM_MIN_IV_LENGTH;
+  return length === (mode === "cbc" ? 16 : 0);
+}
+
+function invalidAuthTagLength(length) {
+  return cryptoError(`Invalid authentication tag length: ${length}`, "ERR_CRYPTO_INVALID_AUTH_TAG", TypeError);
+}
+
+// Buffers until `final`: a block cipher's concatenated output still matches Node's byte for byte.
+class Cipher {
+  constructor(algorithm, key, iv, options, decrypt) {
+    const name = String(algorithm).toLowerCase().replace(/^aes(128|192|256)$/, "aes-$1-cbc");
+    const match = /^aes-(128|192|256)-(cbc|ecb|gcm)$/.exec(name);
+    if (!match) throw cryptoError("Unknown cipher", "ERR_CRYPTO_UNKNOWN_CIPHER");
+    this._mode = match[2];
+    this._key = cryptoBytes(key);
+    this._iv = iv == null ? Buffer.alloc(0) : cryptoBytes(iv);
+    if (this._key.length !== Number(match[1]) / 8) {
+      throw cryptoError("Invalid key length", "ERR_CRYPTO_INVALID_KEYLEN", RangeError);
+    }
+    if (!hasValidIvLength(this._mode, this._iv.length)) {
+      throw cryptoError("Invalid initialization vector", "ERR_CRYPTO_INVALID_IV", TypeError);
+    }
+    const tagLength = options?.authTagLength ?? GCM_TAG_LENGTH;
+    if (this._mode === "gcm" && tagLength !== GCM_TAG_LENGTH) throw invalidAuthTagLength(tagLength);
+    this._decrypt = decrypt;
+    this._padding = true;
+    this._aad = [];
+    this._authTag = null;
+    this._chunks = [];
+    this._finished = false;
+  }
+  update(data, inputEncoding, outputEncoding) {
+    if (this._finished) throw new Error("Trying to add data in unsupported state");
+    this._chunks.push(cryptoBytes(data, inputEncoding));
+    return outputEncoding ? "" : Buffer.alloc(0);
+  }
+  final(outputEncoding) {
+    if (this._finished) throw cryptoError("Invalid state", "ERR_CRYPTO_INVALID_STATE");
+    this._finished = true;
+    const bytes = this._mode === "gcm" ? this._finalGcm() : this._finalBlock();
+    return outputEncoding ? bytes.toString(outputEncoding) : bytes;
+  }
+  _finalBlock() {
+    const base64 = hostCallSync("crypto", "cipher", [
+      this._mode,
+      this._decrypt,
+      bytesToBase64(this._key),
+      bytesToBase64(this._iv),
+      bytesToBase64(Buffer.concat(this._chunks)),
+      this._padding,
+    ]);
+    return Buffer.from(base64ToBytes(base64));
+  }
+  _finalGcm() {
+    const parts = [this._key, this._iv, Buffer.concat(this._chunks), Buffer.concat(this._aad)];
+    const args = parts.map((bytes) => bytesToBase64(bytes));
+    if (!this._decrypt) {
+      const sealed = hostCallSync("crypto", "gcmSeal", args);
+      this._authTag = Buffer.from(base64ToBytes(sealed.tag));
+      return Buffer.from(base64ToBytes(sealed.ciphertext));
+    }
+    // Node reports a missing tag the same way as a wrong one, and gives neither a code.
+    if (!this._authTag) throw new Error(GCM_AUTHENTICATION_FAILURE);
+    const opened = hostCallSync("crypto", "gcmOpen", [...args, bytesToBase64(this._authTag)]);
+    if (opened === null) throw new Error(GCM_AUTHENTICATION_FAILURE);
+    return Buffer.from(base64ToBytes(opened));
+  }
+  setAutoPadding(enabled = true) {
+    if (this._finished) throw cryptoError("Invalid state", "ERR_CRYPTO_INVALID_STATE");
+    this._padding = Boolean(enabled);
+    return this;
+  }
+  setAAD(buffer) {
+    if (this._mode !== "gcm" || this._finished) throw cryptoError("Invalid state", "ERR_CRYPTO_INVALID_STATE");
+    this._aad.push(cryptoBytes(buffer));
+    return this;
+  }
+  getAuthTag() {
+    if (this._decrypt || !this._authTag) throw cryptoError("Invalid state", "ERR_CRYPTO_INVALID_STATE");
+    return Buffer.from(this._authTag);
+  }
+  setAuthTag(tag, encoding) {
+    if (this._mode !== "gcm" || !this._decrypt || this._finished) {
+      throw cryptoError("Invalid state", "ERR_CRYPTO_INVALID_STATE");
+    }
+    const bytes = cryptoBytes(tag, encoding);
+    if (bytes.length !== GCM_TAG_LENGTH) throw invalidAuthTagLength(bytes.length);
+    this._authTag = bytes;
+    return this;
+  }
+}
+
+function pbkdf2Sync(password, salt, iterations, keylen, digest) {
+  const base64 = hostCallSync("crypto", "pbkdf2", [
+    String(digest),
+    bytesToBase64(cryptoBytes(password)),
+    bytesToBase64(cryptoBytes(salt)),
+    Number(iterations),
+    Number(keylen),
+  ]);
+  return Buffer.from(base64ToBytes(base64));
 }
 
 const cryptoModule = {
@@ -584,8 +934,19 @@ const cryptoModule = {
     return min + (value % (max - min));
   },
   createHash: (algorithm) => new Hash(algorithm),
-  createHmac: (algorithm, key) => new Hash(algorithm, bytesToBase64(typeof key === "string" ? Buffer.from(key, "utf8") : Buffer.from(key))),
+  createHmac: (algorithm, key) => new Hash(algorithm, bytesToBase64(cryptoBytes(key))),
+  createCipheriv: (algorithm, key, iv, options) => new Cipher(algorithm, key, iv, options, false),
+  createDecipheriv: (algorithm, key, iv, options) => new Cipher(algorithm, key, iv, options, true),
+  pbkdf2Sync,
+  pbkdf2(password, salt, iterations, keylen, digest, callback) {
+    if (typeof callback !== "function") {
+      throw cryptoError('The "callback" argument must be of type function.', "ERR_INVALID_ARG_TYPE", TypeError);
+    }
+    const key = pbkdf2Sync(password, salt, iterations, keylen, digest);
+    queueMicrotask(() => callback(null, key));
+  },
   timingSafeEqual: (a, b) => Buffer.from(a).equals(Buffer.from(b)),
+  getHashes: () => ["md5", "sha1", "sha256", "sha384", "sha512"],
   getRandomValues: (target) => cryptoModule.randomFillSync(target),
   webcrypto: null,
   constants: {},
@@ -599,7 +960,31 @@ function zlibSync(method) {
   return (data) => Buffer.from(base64ToBytes(hostCallSync("zlib", method, [bytesToBase64(Buffer.from(data))])));
 }
 
+// minizlib swaps `Buffer.concat` for a no-op around `_processChunk`, so hold the real one.
+const concatBuffers = Buffer.concat;
+
+class Unzip extends EventEmitter {
+  constructor() {
+    super();
+    this._chunks = [];
+    this._handle = { close() {} };
+  }
+  _processChunk(chunk, flush) {
+    this._chunks.push(Buffer.from(chunk));
+    if (flush !== 4) return Buffer.alloc(0);
+    const input = concatBuffers(this._chunks);
+    this._chunks = [];
+    if (!input.length) return input;
+    return zlibSync(input[0] === 0x1f && input[1] === 0x8b ? "gunzip" : "inflate")(input);
+  }
+  close() {
+    this._chunks = [];
+    this._handle = null;
+  }
+}
+
 const zlibImpl = {
+  Unzip,
   gzipSync: zlibSync("gzip"),
   gunzipSync: zlibSync("gunzip"),
   deflateSync: zlibSync("deflate"),
@@ -615,155 +1000,47 @@ const zlibImpl = {
   constants: {},
 };
 for (const name of ["gzip", "gunzip", "deflate", "inflate", "deflateRaw", "inflateRaw"]) {
-  zlibImpl[name] = callbackify(zlibImpl[`${name}Sync`]);
+  const sync = zlibImpl[`${name}Sync`];
+  zlibImpl[name] = callbackify(sync);
+  zlibImpl[`create${name[0].toUpperCase()}${name.slice(1)}`] = () => {
+    const chunks = [];
+    return new Transform({
+      transform(chunk, _enc, cb) {
+        chunks.push(Buffer.from(chunk));
+        cb();
+      },
+      flush(cb) {
+        try {
+          cb(null, sync(concatBuffers(chunks)));
+        } catch (error) {
+          cb(error);
+        }
+      },
+    });
+  };
 }
-// The one-shot functions above are real; the stream classes (`zlib.Inflate`, …) are not, and bundles
-// subclass them at load time — so unknown members fall through to a throwing constructor.
 const zlib = unsupportedModule("zlib", zlibImpl);
 
 // ─── events ─────────────────────────────────────────────────────────
 
-class EventEmitter {
-  constructor() {
-    this._events = new Map();
-    this._maxListeners = 10;
-  }
-  _list(event) {
-    if (!this._events.has(event)) this._events.set(event, []);
-    return this._events.get(event);
-  }
-  on(event, listener) {
-    this._list(event).push(listener);
-    return this;
-  }
-  addListener(event, listener) {
-    return this.on(event, listener);
-  }
-  prependListener(event, listener) {
-    this._list(event).unshift(listener);
-    return this;
-  }
-  once(event, listener) {
-    const wrapper = (...args) => {
-      this.off(event, wrapper);
-      listener(...args);
-    };
-    wrapper.listener = listener;
-    return this.on(event, wrapper);
-  }
-  off(event, listener) {
-    const list = this._events.get(event);
-    if (!list) return this;
-    const index = list.findIndex((entry) => entry === listener || entry.listener === listener);
-    if (index >= 0) list.splice(index, 1);
-    return this;
-  }
-  removeListener(event, listener) {
-    return this.off(event, listener);
-  }
-  removeAllListeners(event) {
-    if (event === undefined) this._events.clear();
-    else this._events.delete(event);
-    return this;
-  }
-  emit(event, ...args) {
-    const list = this._events.get(event);
-    if (!list?.length) return false;
-    for (const listener of list.slice()) listener.apply(this, args);
-    return true;
-  }
-  listenerCount(event) {
-    return this._events.get(event)?.length ?? 0;
-  }
-  listeners(event) {
-    return (this._events.get(event) ?? []).slice();
-  }
-  eventNames() {
-    return Array.from(this._events.keys());
-  }
-  setMaxListeners(count) {
-    this._maxListeners = count;
-    return this;
-  }
-  getMaxListeners() {
-    return this._maxListeners;
-  }
-}
-EventEmitter.EventEmitter = EventEmitter;
-EventEmitter.defaultMaxListeners = 10;
-EventEmitter.once = (emitter, event) =>
-  new Promise((resolve) => emitter.once(event, (...args) => resolve(args)));
-
-class BufferedStream extends EventEmitter {
-  constructor() {
-    super();
-    this.readable = true;
-    this.readableEnded = false;
-    this.encoding = null;
-    // `get-stream` (and therefore execa) consumes stdout by async iteration, not by `data` events.
-    this._delivered = new Promise((resolve) => {
-      this._resolveDelivered = resolve;
-    });
-  }
-
-  async *[Symbol.asyncIterator]() {
-    const bytes = await this._delivered;
-    if (bytes.length) yield this.encoding ? bytes.toString(this.encoding) : bytes;
-  }
-  setEncoding(encoding) {
-    this.encoding = encoding;
-    return this;
-  }
-  pipe(destination) {
-    this.on("data", (chunk) => destination.write?.(chunk));
-    this.on("end", () => destination.end?.());
-    return destination;
-  }
-  resume() {
-    return this;
-  }
-  pause() {
-    return this;
-  }
-  destroy() {
-    return this;
-  }
-  _deliver(bytes) {
-    this._resolveDelivered(bytes);
-    if (bytes.length) this.emit("data", this.encoding ? bytes.toString(this.encoding) : bytes);
-    this.readableEnded = true;
-    this.emit("end");
-    this.emit("close");
-  }
-}
-
-class BufferedChildProcess extends EventEmitter {
+class ChildProcess extends EventEmitter {
   constructor(file, args, options) {
     super();
     this.pid = 0;
     this.killed = false;
     this.exitCode = null;
-    this.stdout = new BufferedStream();
-    this.stderr = new BufferedStream();
+    this.stdout = new PassThrough();
+    this.stderr = new PassThrough();
     this._input = [];
     this._started = false;
 
     const self = this;
-    this.stdin = {
-      writable: true,
-      write(chunk) {
-        self._input.push(typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk));
-        return true;
-      },
-      end(chunk) {
-        if (chunk !== undefined) this.write(chunk);
-        self._start(file, args, options);
-      },
-      destroy() {},
-      on() {},
-      once() {},
-      emit() {},
-    };
+    this.stdin = new EventEmitter();
+    this.stdin.writable = true;
+    this.stdin.write = (chunk) => (self._input.push(typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk)), true);
+    this.stdin.end = (chunk) => { if (chunk !== undefined) this.stdin.write(chunk); self._start(file, args, options); return this.stdin; };
+    this.stdin.destroy = () => {};
+    this.stdio = [this.stdin, this.stdout, this.stderr];
 
     // Start on a microtask, not a timer. Callers write stdin synchronously right after `spawn()`
     // (`p.stdin.write(q); p.stdin.end()`), so a microtask still collects it — but unlike a timer it is
@@ -777,41 +1054,47 @@ class BufferedChildProcess extends EventEmitter {
     if (this._started) return;
     this._started = true;
     const input = this._input.length ? bytesToBase64(Buffer.concat(this._input)) : null;
-    hostCall("proc", "run", [
-      {
-        shell: !!options.shell,
-        command: file,
-        args,
-        cwd: options.cwd,
-        env: options.env,
-        timeout: options.timeout,
-        input,
-        // A detached child outlives the caller (`caffeinate -t 300 &`); don't wait for it to exit.
-        detached: !!options.detached,
-      },
-    ]).then(
+    const { pid, exit } = startChild({
+      shell: !!options.shell,
+      command: file,
+      args,
+      cwd: options.cwd,
+      env: childEnv(options.env),
+      timeout: options.timeout,
+      input,
+      stdio: stdioDescriptors(options.stdio),
+      // `detached` only makes a process group; only an unread child may answer before it exits.
+      detached: !!options.detached && (Array.isArray(options.stdio) ? options.stdio[1] : options.stdio) === "ignore",
+    }, (pid) => Promise.all([pipeChild(pid, 1, this.stdout), pipeChild(pid, 2, this.stderr)]));
+    this.pid = pid;
+    if (pid) queueMicrotask(() => this.emit("spawn"));
+    exit.then(
       (raw) => {
         this.exitCode = raw.status;
-        this.stdout._deliver(Buffer.from(base64ToBytes(raw.stdout)));
-        this.stderr._deliver(Buffer.from(base64ToBytes(raw.stderr)));
-        this.emit("exit", raw.status, raw.signal ?? null);
-        this.emit("close", raw.status, raw.signal ?? null);
+        this.stdin.emit("finish");
+        this.stdout.end(Buffer.from(base64ToBytes(raw.stdout)));
+        this.stderr.end(Buffer.from(base64ToBytes(raw.stderr)));
+        // One host reply carries both, but a reader still expects the output before the exit code.
+        queueMicrotask(() => {
+          this.emit("exit", raw.status, raw.signal ?? null);
+          this.emit("close", raw.status, raw.signal ?? null);
+        });
       },
       (error) => {
         // Close the streams even on failure: a consumer that awaits stdout (execa does) would
         // otherwise see `undefined` where Node guarantees an empty string.
         this.exitCode = 1;
-        this.stdout._deliver(Buffer.alloc(0));
-        this.stderr._deliver(Buffer.from(String(error?.message ?? error), "utf8"));
+        this.stdin.emit("finish");
+        this.stdout.end();
+        this.stderr.end(Buffer.from(String(error?.message ?? error), "utf8"));
         this.emit("error", error);
-        this.emit("close", 1, null);
+        queueMicrotask(() => this.emit("close", 1, null));
       },
     );
   }
 
-  kill() {
-    this.killed = true;
-    return false;
+  kill(signal) {
+    return this.exitCode === null && signalChild(this, signal);
   }
 
   // Node uses these to detach a child from the event loop. Nothing here keeps the runtime alive, so
@@ -852,8 +1135,12 @@ childProcess.execFile[PROMISIFY_CUSTOM] = (file, args, options) =>
     });
   });
 
+function stdioDescriptors(stdio) {
+  return Array.isArray(stdio) ? [0, 1, 2].map((index) => (typeof stdio[index] === "number" ? stdio[index] : null)) : null;
+}
+
 function pickRunOptions(options = {}) {
-  return { cwd: options.cwd, env: options.env, timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null };
+  return { cwd: options.cwd, env: childEnv(options.env), timeout: options.timeout, input: options.input ? bytesToBase64(Buffer.from(options.input)) : null };
 }
 
 /// Node guarantees `stdout` / `stderr` on a failed exec's error, and extensions inspect them (an
@@ -869,9 +1156,59 @@ function decorateProcessError(error, label) {
   return decorated;
 }
 
-/// The async forms get a real async host call so a slow command can't stall the JS thread.
+/// Launched synchronously because extensions store `child.pid` right away to `process.kill` it later.
+function startChild(spec, drain) {
+  try {
+    const pid = hostCallSync("proc", "start", [spec]);
+    const exit = spec.detached
+      ? Promise.resolve({ stdout: "", stderr: "", status: 0 })
+      : Promise.resolve(drain?.(pid)).then(() => hostCall("proc", "wait", [pid]));
+    return { pid, exit };
+  } catch (error) {
+    return { pid: undefined, exit: Promise.reject(error) };
+  }
+}
+
+async function pipeChild(pid, fd, stream) {
+  let held = Buffer.alloc(0);
+  for (let chunk; (chunk = await hostCall("proc", "read", [pid, fd])); ) {
+    const bytes = Buffer.concat([held, Buffer.from(base64ToBytes(chunk))]);
+    const cut = utf8Boundary(bytes);
+    held = bytes.subarray(cut);
+    if (cut) stream.write(bytes.subarray(0, cut));
+  }
+  if (held.length) stream.write(held);
+}
+
+/// Holds back a trailing partial UTF-8 character so a chunk never splits one.
+function utf8Boundary(bytes) {
+  for (let i = bytes.length - 1; i >= Math.max(0, bytes.length - 3); i--) {
+    if ((bytes[i] & 0xc0) === 0x80) continue;
+    const need = bytes[i] >= 0xf0 ? 4 : bytes[i] >= 0xe0 ? 3 : bytes[i] >= 0xc0 ? 2 : 1;
+    return bytes.length - i < need ? i : bytes.length;
+  }
+  return bytes.length;
+}
+
+/// Node's `ChildProcess.kill` reports an undeliverable signal by returning false, never by throwing.
+function signalChild(child, signal) {
+  if (!child.pid) return false;
+  try {
+    process.kill(child.pid, signal);
+  } catch {
+    return false;
+  }
+  child.killed = true;
+  return true;
+}
+
 function runAsync(spec, options, callback, label) {
-  const promise = hostCall("proc", "run", [spec])
+  const { pid, exit } = startChild(spec);
+  let exited = false;
+  const promise = exit
+    .finally(() => {
+      exited = true;
+    })
     .then((raw) => normalizeExecResult(raw, options))
     .catch((error) => {
       throw decorateProcessError(error, label);
@@ -883,85 +1220,247 @@ function runAsync(spec, options, callback, label) {
     );
   }
   // Node returns a ChildProcess; extensions mostly ignore it or await the promisified form.
-  const handle = { pid: 0, kill: () => false, on: () => handle, stdout: null, stderr: null };
+  const handle = { pid, killed: false, kill: (signal) => !exited && signalChild(handle, signal), on: () => handle, stdout: null, stderr: null };
   handle.then = promise.then.bind(promise);
   handle.catch = promise.catch.bind(promise);
   handle[Symbol.for("nodejs.util.promisify.custom")] = () => promise;
   return handle;
 }
 
-// ─── stream ─────────────────────────────────────────────────────────
+// ─── http / https ───────────────────────────────────────────────────
 
-// Only what `@raycast/utils`' `useExec` needs: it pipes a child's stdout into a `PassThrough` and
-// reads back the buffered value, so `stream` cannot stay a stub or every `useExec` extension fails.
-// Worse, it fails opaquely — the thrown "not supported" never reaches the extension, which reports
-// the TypeError that follows from an undefined stdout instead. Everything else on the module still
-// refuses to run.
-class PassThrough extends EventEmitter {
-  constructor() {
+class IncomingMessage extends PassThrough {
+  constructor(raw) {
     super();
-    this.readable = true;
-    this.writable = true;
-    this.writableEnded = false;
-    this.encoding = null;
+    this.statusCode = raw.status ?? 200;
+    this.statusMessage = raw.statusText ?? "";
+    this.httpVersion = "1.1";
+    this.url = raw.url ?? "";
+    this.complete = true;
+    // The bridge decodes the body itself, so keeping these would have the client gunzip plaintext.
+    this.headers = Object.fromEntries(
+      Object.entries(raw.headers ?? {}).filter(
+        ([name]) => name !== "content-encoding" && name !== "content-length",
+      ),
+    );
+    // URLSession folds repeated `Set-Cookie` headers into one line; Node always hands out an array.
+    if (typeof this.headers["set-cookie"] === "string") {
+      this.headers["set-cookie"] = this.headers["set-cookie"].split(SET_COOKIE_BOUNDARY);
+    }
+    this.rawHeaders = Object.entries(this.headers).flatMap(([name, value]) =>
+      [value].flat().flatMap((item) => [name, item]),
+    );
+  }
+}
+
+/// A comma that starts another `name=` — never the one inside an `Expires` date.
+const SET_COOKIE_BOUNDARY = /,\s*(?=[^;,=\s]+=)/;
+
+const HEADER_TOKEN = /^[\^`\-\w!#$%&'*+.|~]+$/;
+const HEADER_VALUE = /[^\t\u0020-\u007e\u0080-\u00ff]/;
+
+function headerError(message, code) {
+  const error = new TypeError(message);
+  error.code = code;
+  return error;
+}
+
+function validateHeaderName(name) {
+  if (typeof name !== "string" || !HEADER_TOKEN.test(name)) {
+    throw headerError(`Header name must be a valid HTTP token ["${name}"]`, "ERR_INVALID_HTTP_TOKEN");
+  }
+}
+
+function validateHeaderValue(name, value) {
+  if (value === undefined) {
+    throw headerError(`Invalid value "undefined" for header "${name}"`, "ERR_HTTP_INVALID_HEADER_VALUE");
+  }
+  if (HEADER_VALUE.test(String(value))) {
+    throw headerError(`Invalid character in header content ["${name}"]`, "ERR_INVALID_CHAR");
+  }
+}
+
+/// The bridge owns every socket; `addRequest` is only a hook for cookie agents to override.
+class Agent extends EventEmitter {
+  constructor(options) {
+    super();
+    this.options = { ...options };
   }
 
-  setEncoding(encoding) {
-    this.encoding = encoding;
+  addRequest() {}
+
+  destroy() {}
+}
+
+class ClientRequest extends EventEmitter {
+  constructor(url, options, callback) {
+    super();
+    this.url = url;
+    // A malformed URL still fails the way it always has: as an `error` once the bridge rejects it.
+    if (URL.canParse(url)) {
+      const target = new URL(url);
+      this.protocol = target.protocol;
+      this.host = target.hostname;
+      this.path = target.pathname + target.search;
+    }
+    this.method = String(options.method ?? "GET").toUpperCase();
+    this.socketPath = options.socketPath;
+    this.writable = true;
+    this.writableEnded = false;
+    this._headers = new Map();
+    this._chunks = [];
+    this._destroyed = false;
+    for (const [name, value] of Object.entries(options.headers ?? {})) this.setHeader(name, value);
+    if (callback) this.once("response", callback);
+    // Any other agent shape — agent-base 6 extends EventEmitter — would try to open a socket.
+    if (options.agent instanceof Agent) options.agent.addRequest(this, options);
+  }
+
+  /// Node's last chance to touch headers before they go out; cookie agents wrap it.
+  _implicitHeader() {}
+
+  setHeader(name, value) {
+    this._headers.set(String(name).toLowerCase(), Array.isArray(value) ? value.join(", ") : String(value));
     return this;
   }
 
+  getHeader(name) {
+    return this._headers.get(String(name).toLowerCase());
+  }
+
+  getHeaders() {
+    return Object.fromEntries(this._headers);
+  }
+
+  removeHeader(name) {
+    this._headers.delete(String(name).toLowerCase());
+  }
+
   write(chunk) {
-    const decode = this.encoding && typeof chunk !== "string";
-    this.emit("data", decode ? Buffer.from(chunk).toString(this.encoding) : chunk);
+    this._chunks.push(Buffer.from(chunk));
     return true;
   }
 
   end(chunk) {
     if (chunk !== undefined && chunk !== null) this.write(chunk);
+    this._implicitHeader();
     this.writableEnded = true;
-    this.emit("end");
-    this.emit("finish");
-    this.emit("close");
-  }
-
-  pipe(destination) {
-    this.on("data", (chunk) => destination.write?.(chunk));
-    this.on("end", () => destination.end?.());
-    return destination;
-  }
-
-  resume() {
+    this._send();
     return this;
   }
 
-  pause() {
+  abort() {
+    return this.destroy();
+  }
+
+  destroy(error) {
+    this._destroyed = true;
+    clearTimeout(this._timer);
+    if (error) this.emit("error", error);
     return this;
   }
 
-  destroy() {
+  setTimeout(ms, callback) {
+    if (callback) this.once("timeout", callback);
+    clearTimeout(this._timer);
+    this._timer = setTimeout(() => this.emit("timeout"), ms);
     return this;
+  }
+
+  setNoDelay() {
+    return this;
+  }
+
+  setSocketKeepAlive() {
+    return this;
+  }
+
+  flushHeaders() {}
+
+  async _send() {
+    if (String(this.getHeader("upgrade") ?? "").toLowerCase() === "websocket") return this._upgrade();
+    // Content negotiation belongs to the transport, which decodes for us and reports the result.
+    this.removeHeader("accept-encoding");
+    const body = this._chunks.length ? Buffer.concat(this._chunks) : null;
+    try {
+      const raw = await hostCall("fetch", "request", [
+        {
+          url: this.url,
+          ...(this.socketPath ? { socketPath: this.socketPath } : {}),
+          method: this.method,
+          headers: this.getHeaders(),
+          bodyBase64: body === null ? null : body.toString("base64"),
+        },
+      ]);
+      if (this._destroyed) return;
+      clearTimeout(this._timer);
+      const response = new IncomingMessage(raw);
+      this.emit("response", response);
+      response.end(Buffer.from(raw.bodyBase64 ?? "", "base64"));
+      this.emit("close");
+    } catch (error) {
+      clearTimeout(this._timer);
+      if (!this._destroyed) this.emit("error", error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  /// The host opens the socket, so the 101 is synthesised — never with an extension, so no deflate.
+  async _upgrade() {
+    const headers = this.getHeaders();
+    try {
+      const { socket, protocol } = await upgradeToWebSocket({
+        url: this.url.replace(/^http/, "ws"),
+        protocols: splitList(headers["sec-websocket-protocol"]),
+        headers: Object.fromEntries(
+          Object.entries(headers).filter(([name]) => !HANDSHAKE_HEADERS.has(name)),
+        ),
+      });
+      clearTimeout(this._timer);
+      if (this._destroyed) return socket.destroy();
+      const accept = new Hash("sha1").update(`${headers["sec-websocket-key"] ?? ""}${WEBSOCKET_GUID}`).digest("base64");
+      const response = new IncomingMessage({
+        status: 101,
+        statusText: "Switching Protocols",
+        headers: {
+          upgrade: "websocket",
+          connection: "Upgrade",
+          "sec-websocket-accept": accept,
+          ...(protocol ? { "sec-websocket-protocol": protocol } : {}),
+        },
+      });
+      if (!this.emit("upgrade", response, socket, Buffer.alloc(0))) socket.destroy();
+    } catch (error) {
+      clearTimeout(this._timer);
+      if (!this._destroyed) this.emit("error", error instanceof Error ? error : new Error(String(error)));
+    }
   }
 }
 
-/// Callback form, so `util.promisify(stream.pipeline)` works. Completion comes from the last stage:
-/// a source ends its destination when it ends, which is what `BufferedStream.pipe` wires up.
-function pipeline(...stages) {
-  const callback = typeof stages[stages.length - 1] === "function" ? stages.pop() : null;
-  let settled = false;
-  const finish = (error) => {
-    if (settled) return;
-    settled = true;
-    callback?.(error ?? null);
-  };
-  const last = stages.reduce((from, to) => {
-    from.on?.("error", finish);
-    return from.pipe(to);
-  });
-  last.on("error", finish);
-  last.on("finish", () => finish());
-  last.on("end", () => finish());
-  return last;
+const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+/// URLSession writes the handshake itself; forwarding these would have it refuse the request.
+const HANDSHAKE_HEADERS = new Set([
+  "connection", "upgrade", "host", "sec-websocket-key", "sec-websocket-version",
+  "sec-websocket-extensions", "sec-websocket-protocol",
+]);
+
+function splitList(value) {
+  return String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function httpRequest(input, options, callback, scheme = "http:") {
+  if (typeof options === "function") return httpRequest(input, {}, options, scheme);
+  if (typeof input === "string" || input instanceof URL) {
+    return new ClientRequest(String(input), options ?? {}, callback);
+  }
+  const spec = input ?? {};
+  const host = spec.hostname ?? spec.host ?? "localhost";
+  const port = spec.port ? `:${spec.port}` : "";
+  return new ClientRequest(`${spec.protocol ?? scheme}//${host}${port}${spec.path ?? "/"}`, spec, callback);
+}
+
+function httpGet(input, options, callback, scheme) {
+  return httpRequest(input, options, callback, scheme).end();
 }
 
 // ─── util ───────────────────────────────────────────────────────────
@@ -1003,6 +1502,67 @@ function format(first, ...rest) {
   return [text, ...rest.slice(index).map((value) => inspect(value))].join(" ");
 }
 
+const TYPED_ARRAYS = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array, BigInt64Array, BigUint64Array];
+const BOXED_TAGS = ["Boolean", "Number", "String", "Symbol", "BigInt"];
+
+const tagOf = (value) => Object.prototype.toString.call(value).slice(8, -1);
+const isBoxed = (value) => typeof value === "object" && value !== null && BOXED_TAGS.includes(tagOf(value));
+
+/// Node's whole `util.types` table, because a bundle that reaches an absent member gets a TypeError
+/// where the predicate would simply have answered `false` — node-fetch calls `isBoxedPrimitive` on
+/// every request body it normalises.
+const types = {
+  isDate: (value) => value instanceof Date,
+  isRegExp: (value) => value instanceof RegExp,
+  isPromise: (value) => !!value && typeof value.then === "function",
+  isMap: (value) => value instanceof Map,
+  isSet: (value) => value instanceof Set,
+  isWeakMap: (value) => value instanceof WeakMap,
+  isWeakSet: (value) => value instanceof WeakSet,
+  isNativeError: (value) => value instanceof Error,
+  isArgumentsObject: (value) => tagOf(value) === "Arguments",
+  isAsyncFunction: (value) => tagOf(value) === "AsyncFunction",
+  isGeneratorFunction: (value) => tagOf(value) === "GeneratorFunction",
+  isGeneratorObject: (value) => tagOf(value) === "Generator",
+  isModuleNamespaceObject: (value) => tagOf(value) === "Module",
+  isArrayBuffer: (value) => value instanceof ArrayBuffer,
+  isSharedArrayBuffer: (value) => tagOf(value) === "SharedArrayBuffer",
+  isAnyArrayBuffer: (value) => value instanceof ArrayBuffer || tagOf(value) === "SharedArrayBuffer",
+  isArrayBufferView: (value) => ArrayBuffer.isView(value),
+  isDataView: (value) => value instanceof DataView,
+  isTypedArray: (value) => ArrayBuffer.isView(value) && !(value instanceof DataView),
+  isBoxedPrimitive: isBoxed,
+  isProxy: () => false,
+  isExternal: () => false,
+  isKeyObject: () => false,
+  isCryptoKey: () => false,
+  ...Object.fromEntries(TYPED_ARRAYS.map((Type) => [`is${Type.name}`, (value) => value instanceof Type])),
+  ...Object.fromEntries(BOXED_TAGS.map((tag) => [`is${tag}Object`, (value) => isBoxed(value) && tagOf(value) === tag])),
+};
+
+/// Node's own ANSI matcher, verbatim: a looser regex eats printable text out of an execa message.
+const VT_CONTROL = /[\u001B\u009B][[\]()#;?]*(?:(?:(?:(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*|[a-zA-Z\d]+(?:;[-a-zA-Z\d\/#&.:=?%@~_]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
+
+const sectionEnabled = (section) =>
+  String(process.env.NODE_DEBUG || "")
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .some((token) =>
+      new RegExp(`^${token.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, "i").test(section),
+    );
+
+/// execa and undici both call this at module scope, so an absent `debuglog` takes the bundle down
+/// before its command ever runs.
+function debuglog(section, onLogger) {
+  const enabled = sectionEnabled(section);
+  const logger = enabled
+    ? (...args) => process.stderr.write(`${String(section).toUpperCase()} ${process.pid}: ${format(...args)}\n`)
+    : () => {};
+  logger.enabled = enabled;
+  onLogger?.(logger);
+  return logger;
+}
+
 const promisifyCustom = Symbol.for("nodejs.util.promisify.custom");
 
 const util = {
@@ -1021,6 +1581,15 @@ const util = {
   },
   inspect,
   format,
+  formatWithOptions: (_options, ...args) => format(...args),
+  debuglog,
+  debug: debuglog,
+  stripVTControlCharacters: (text) => String(text).replace(VT_CONTROL, ""),
+  aborted: (signal) =>
+    new Promise((resolve) => {
+      if (signal.aborted) resolve();
+      else signal.addEventListener("abort", () => resolve(), { once: true });
+    }),
   /// Deliberately more forgiving than Node's: bundles call this at load time against classes from
   /// modules Tinycast only stubs, and a throw there would take down an extension that never reaches
   /// the code path.
@@ -1033,16 +1602,10 @@ const util = {
   isDeepStrictEqual: (a, b) => JSON.stringify(a) === JSON.stringify(b),
   TextEncoder: globalThis.TextEncoder,
   TextDecoder: globalThis.TextDecoder,
-  types: {
-    isDate: (value) => value instanceof Date,
-    isRegExp: (value) => value instanceof RegExp,
-    isPromise: (value) => !!value && typeof value.then === "function",
-    isTypedArray: (value) => ArrayBuffer.isView(value),
-    isUint8Array: (value) => value instanceof Uint8Array,
-    isArrayBuffer: (value) => value instanceof ArrayBuffer,
-  },
+  types,
 };
 util.promisify.custom = promisifyCustom;
+util.inspect.custom = Symbol.for("nodejs.util.inspect.custom");
 
 // ─── querystring / assert / string_decoder ──────────────────────────
 
@@ -1068,6 +1631,19 @@ const querystring = {
   escape: encodeURIComponent,
   unescape: decodeURIComponent,
 };
+
+/// Node's legacy `url.format`, which also takes the parts object http-cookie-agent builds per request.
+function formatURL(value) {
+  if (typeof value !== "object" || value === null || value instanceof URL) return String(value);
+  const protocol = value.protocol ? value.protocol.replace(/:?$/, ":") : "";
+  const slashes = value.slashes || /^(https?|ftp|gopher|file|wss?):$/.test(protocol) ? "//" : "";
+  const auth = value.auth ? `${value.auth}@` : "";
+  const host = value.host ?? (value.hostname ? value.hostname + (value.port ? `:${value.port}` : "") : "");
+  const pathname = (value.pathname ?? "").replace(/[?#]/g, encodeURIComponent);
+  const query = value.query && typeof value.query === "object" ? querystring.stringify(value.query) : "";
+  const search = value.search ?? (query ? `?${query}` : "");
+  return `${protocol}${slashes}${auth}${host}${pathname}${search}${value.hash ?? ""}`;
+}
 
 function assert(value, message) {
   if (!value) throw new Error(message || "Assertion failed");
@@ -1107,6 +1683,11 @@ class StringDecoder {
 /// so the member has to be a real constructor — and unknown members must exist too, hence the Proxy.
 function unsupportedModule(name, extras = {}) {
   const cache = new Map();
+  const lazy = new Set((UNSUPPORTED_EXPORTS[name] ?? []).filter((each) => !(each in extras)));
+  const manufacture = (member) => {
+    if (!cache.has(member)) cache.set(member, makeUnsupported(`${name}.${member}`));
+    return cache.get(member);
+  };
   return new Proxy(extras, {
     get(target, member) {
       if (member in target) return target[member];
@@ -1114,8 +1695,14 @@ function unsupportedModule(name, extras = {}) {
       // skip the default-wrapping it would otherwise apply, and a truthy `then` makes the module
       // look like a thenable to `await`.
       if (typeof member !== "string" || RESERVED_MEMBERS.has(member)) return undefined;
-      if (!cache.has(member)) cache.set(member, makeUnsupported(`${name}.${member}`));
-      return cache.get(member);
+      return manufacture(member);
+    },
+    // esbuild's `__toESM` snapshots own keys and never reads through `get`.
+    ownKeys: (target) => [...new Set([...Reflect.ownKeys(target), ...lazy])],
+    getOwnPropertyDescriptor(target, member) {
+      const own = Reflect.getOwnPropertyDescriptor(target, member);
+      if (own || !lazy.has(member)) return own;
+      return { value: manufacture(member), writable: true, enumerable: true, configurable: true };
     },
   });
 }
@@ -1138,9 +1725,139 @@ function makeUnsupported(label) {
 }
 
 const httpLike = (name) =>
-  unsupportedModule(name, { globalAgent: {}, STATUS_CODES: {}, METHODS: [] });
+  unsupportedModule(name, {
+    // The scheme rides with the module: `ws` and axios both pass an options bag with no protocol.
+    request: (input, options, callback) => httpRequest(input, options, callback, `${name}:`),
+    get: (input, options, callback) => httpGet(input, options, callback, `${name}:`),
+    validateHeaderName,
+    validateHeaderValue,
+    IncomingMessage,
+    ClientRequest,
+    Agent,
+    globalAgent: new Agent(),
+    STATUS_CODES: {},
+    METHODS: [],
+  });
 
-const streamStub = unsupportedModule("stream", { PassThrough, pipeline });
+/// Node's streams are ES5 functions: follow-redirects, inside axios, calls `Writable` on its `this`.
+function es5Constructible(Class) {
+  return new Proxy(Class, {
+    apply: (target, self, args) =>
+      void Object.defineProperties(self, Object.getOwnPropertyDescriptors(new target(...args))),
+  });
+}
+
+const streamClasses = {
+  Stream: es5Constructible(Stream),
+  Readable: es5Constructible(Readable),
+  Writable: es5Constructible(Writable),
+  Duplex: es5Constructible(Duplex),
+  Transform: es5Constructible(Transform),
+  PassThrough: es5Constructible(PassThrough),
+};
+
+const streamModule = unsupportedModule(
+  "stream",
+  Object.assign(streamClasses.Stream, {
+    ...streamClasses,
+    getDefaultHighWaterMark: (objectMode) => (objectMode ? 16 : 16 * 1024),
+    pipeline,
+    finished,
+    promises: { pipeline: (...stages) => pipelinePromise(stages), finished: finishedPromise },
+  }),
+);
+
+const webStreamModule = { ReadableStream, WritableStream, TransformStream };
+
+/// http2-wrapper reads `new tls.TLSSocket(stream)._handle._parentWrap.constructor` at import time.
+const TLSSocket = class TLSSocket extends Duplex {
+  _handle = { _parentWrap: { constructor: TLSSocket } };
+};
+
+class AsyncLocalStorage {
+  run(_store, fn) {
+    return fn();
+  }
+  getStore() {
+    return undefined;
+  }
+}
+
+/// undici extends this at module scope; with one synchronous context, the scope is just the call.
+class AsyncResource {
+  constructor(type) {
+    this.type = type;
+  }
+  runInAsyncScope(fn, thisArg, ...args) {
+    return Reflect.apply(fn, thisArg, args);
+  }
+  bind(fn, thisArg = this) {
+    return fn.bind(thisArg);
+  }
+  emitDestroy() {
+    return this;
+  }
+  asyncId() {
+    return 0;
+  }
+  triggerAsyncId() {
+    return 0;
+  }
+}
+
+// ─── diagnostics_channel ────────────────────────────────────────────
+
+/// undici opens a channel per instrumentation point at module scope, so `channel` cannot refuse.
+class Channel {
+  constructor(name) {
+    this.name = name;
+    this._subscribers = [];
+  }
+  get hasSubscribers() {
+    return this._subscribers.length > 0;
+  }
+  subscribe(onMessage) {
+    this._subscribers.push(onMessage);
+  }
+  unsubscribe(onMessage) {
+    const index = this._subscribers.indexOf(onMessage);
+    if (index === -1) return false;
+    this._subscribers.splice(index, 1);
+    return true;
+  }
+  publish(message) {
+    for (const onMessage of [...this._subscribers]) {
+      try {
+        onMessage(message, this.name);
+      } catch (error) {
+        reportUncaught(error);
+      }
+    }
+  }
+  bindStore() {}
+  unbindStore() {
+    return false;
+  }
+  runStores(message, fn, thisArg, ...args) {
+    this.publish(message);
+    return Reflect.apply(fn, thisArg, args);
+  }
+}
+
+const channels = new Map();
+
+function channel(name) {
+  if (!channels.has(name)) channels.set(name, new Channel(name));
+  return channels.get(name);
+}
+
+const diagnosticsChannel = unsupportedModule("diagnostics_channel", {
+  Channel,
+  channel,
+  hasSubscribers: (name) => channels.get(name)?.hasSubscribers ?? false,
+  subscribe: (name, onMessage) => channel(name).subscribe(onMessage),
+  unsubscribe: (name, onMessage) => channels.get(name)?.unsubscribe(onMessage) ?? false,
+});
 
 // ─── Registry ───────────────────────────────────────────────────────
 
@@ -1160,39 +1877,44 @@ export const nodeModules = {
   punycode,
   assert,
   string_decoder: { StringDecoder },
-  url: { URL, URLSearchParams, fileURLToPath: (input) => (input instanceof URL ? decodeURIComponent(input.pathname) : String(input).replace(/^file:\/\//, "")), pathToFileURL: (input) => new URL("file://" + encodeURI(String(input))), parse: (text) => new URL(text), format: (value) => String(value), resolve: (from, to) => new URL(to, from).href },
+  // node-fetch spreads a parsed URL into its request options and reads the legacy `path` off it.
+  url: { URL, URLSearchParams, fileURLToPath, pathToFileURL, parse: (text) => Object.assign(new URL(text), { path: new URL(text).pathname + new URL(text).search }), format: formatURL, resolve: (from, to) => new URL(to, from).href },
   timers: { setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate },
   "timers/promises": { setTimeout: (ms, value) => new Promise((resolve) => setTimeout(() => resolve(value), ms)) },
   perf_hooks: { performance: globalThis.performance },
   http: httpLike("http"),
   https: httpLike("https"),
+  dgram,
   net: unsupportedModule("net"),
-  tls: unsupportedModule("tls"),
+  tls: unsupportedModule("tls", { TLSSocket }),
   dns: unsupportedModule("dns"),
-  stream: streamStub,
-  "stream/web": unsupportedModule("stream/web"),
-  "stream/promises": unsupportedModule("stream/promises"),
-  worker_threads: unsupportedModule("worker_threads", { isMainThread: true }),
+  stream: streamModule,
+  "stream/web": webStreamModule,
+  "stream/promises": { pipeline: (...stages) => pipelinePromise(stages), finished: finishedPromise },
+  // No-ops rather than refusals: undici's `markAsUncloneable || (() => {})` never falls back.
+  worker_threads: unsupportedModule("worker_threads", {
+    isMainThread: true,
+    markAsUncloneable: () => {},
+    markAsUntransferable: () => {},
+    isMarkedAsUntransferable: () => false,
+  }),
   readline: unsupportedModule("readline"),
   tty: { isatty: () => false },
   vm: unsupportedModule("vm"),
-  module: { createRequire: () => requireStub, builtinModules: [] },
+  module: { builtinModules: [] },
   constants: {},
   cluster: { isPrimary: true, isMaster: true },
   inspector: {},
   v8: {},
-  async_hooks: { AsyncLocalStorage: class { run(_store, fn) { return fn(); } getStore() { return undefined; } } },
+  async_hooks: { AsyncLocalStorage, AsyncResource },
+  diagnostics_channel: diagnosticsChannel,
 };
 
-function requireStub(name) {
-  throw new Error(`createRequire is not supported in Tinycast extensions (tried to load "${name}").`);
-}
-
 // Every remaining Node builtin resolves to a refuse-on-use stub. Bundles reference the whole
-// long tail (dgram, http2, domain, repl, …) from dependencies that only touch them on paths an
+// long tail (http2, domain, repl, …) from dependencies that only touch them on paths an
 // extension never reaches, so a require-time throw would fail extensions that actually work.
 const REMAINING_BUILTINS = [
-  "assert/strict", "console", "dgram", "diagnostics_channel", "dns/promises", "domain", "http2",
+  "assert/strict", "console", "dns/promises", "domain", "http2",
   "inspector/promises", "path/posix", "path/win32", "readline/promises", "repl",
   "stream/consumers", "sys", "trace_events", "util/types", "wasi", "sea", "sqlite", "test",
   "test/reporters",
@@ -1216,5 +1938,26 @@ for (const name of Object.keys(nodeModules)) {
 globalThis.process = process;
 globalThis.Buffer = Buffer;
 globalThis.global = globalThis;
+
+// JSContext exposes native Atomics but no shared buffers; extensions have no worker threads.
+if (typeof globalThis.SharedArrayBuffer === "undefined") {
+  globalThis.SharedArrayBuffer = ArrayBuffer;
+  const load = Atomics.load;
+  Atomics.wait = (array, index, value, timeout) => {
+    if (!(array instanceof Int32Array) && !(array instanceof BigInt64Array)) {
+      throw new TypeError("Atomics.wait requires an Int32Array or BigInt64Array");
+    }
+    const offset = Math.trunc(+index) || 0;
+    load(array, offset);
+    const expected = array instanceof BigInt64Array ? BigInt.asIntN(64, value) : value >> 0;
+    const milliseconds = +timeout;
+    if (load(array, offset) !== expected) return "not-equal";
+    if (Number.isNaN(milliseconds) || milliseconds === Infinity) {
+      throw new TypeError("Atomics.wait with an infinite timeout is not supported in Tinycast extensions");
+    }
+    if (milliseconds > 0) hostCallSync("atomics", "wait", [milliseconds]);
+    return "timed-out";
+  };
+}
 
 export { Buffer, process, EventEmitter };

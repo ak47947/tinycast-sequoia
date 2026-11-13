@@ -1,96 +1,8 @@
-// Standalone test for the launcher matcher, compiling the real scorer so a scoring change is caught.
+// Compiles the real root-search scorer and comparator, so a ranking change is caught here.
 import Foundation
 
 @main
 struct FuzzTest {
-    // MARK: - Corpus
-
-    struct App {
-        let name: String
-        var alternates: [String] = []
-        var bundleID: String?
-        var executable: String?
-        var userAlias: String?
-
-        /// Mirrors AppEntry.searchFields, including the alternate-name sanitizing the scan applies.
-        var fields: SearchFields {
-            SearchFields(
-                names: [name],
-                userAlias: userAlias,
-                alternateNames: SearchFields.usableAlternateNames(
-                    alternates, displayName: name, fileName: name + ".app"),
-                bundleID: bundleID, executableName: executable)
-        }
-    }
-
-    // Alternate names taken verbatim from real kMDItemAlternateNames output, junk included.
-    static let apps: [App] = [
-        App(name: "Google Chrome", alternates: ["Google Chrome.app"], bundleID: "com.google.Chrome"),
-        App(name: "Chess", alternates: ["Chess.app"], bundleID: "com.apple.Chess"),
-        App(name: "Time Machine", bundleID: "com.apple.backup.launcher"),
-        App(
-            name: "Safari", alternates: ["浏览器", "browser", "사파리", "Safari.app"],
-            bundleID: "com.apple.Safari"),
-        App(name: "Bluetooth File Exchange"),
-        App(name: "Screenshot"),
-        App(name: "Screen Sharing"),
-        App(
-            name: "Visual Studio Code", bundleID: "com.microsoft.VSCode",
-            executable: "Electron"),
-        App(name: "Photos", bundleID: "com.apple.Photos"),
-        App(name: "App Store", bundleID: "com.apple.AppStore"),
-        App(
-            name: "System Settings",
-            alternates: ["Preferences", "Settings", "System Preferences", "System Settings.app"],
-            bundleID: "com.apple.systempreferences"),
-        App(name: "Calendar", alternates: ["iCal", "Calendar.app"], bundleID: "com.apple.iCal"),
-        App(name: "Terminal", bundleID: "com.apple.Terminal"),
-        App(name: "WhatsApp", bundleID: "net.whatsapp.WhatsApp"),
-        App(name: "Wick"),
-        App(name: "ChatGPT", alternates: ["Codex", "ChatGPT.app"], bundleID: "com.openai.codex"),
-        // Nothing named "Codex" — its display name merely contains c-o-d-e…x as a subsequence.
-        App(name: "Code Explorer"),
-        App(name: "Books", alternates: ["Apple Books", "iBooks", "Books.app"]),
-        App(name: "Contacts", alternates: ["Address Book", "Contacts.app"]),
-        // Ships an untranslated localization placeholder — see SearchFields.usableAlternateNames.
-        App(name: "Maps", alternates: ["ALTERNATE_NAME_1", "Maps.app"]),
-        // Alternate that only repeats the display name; contributes nothing.
-        App(name: "Image Playground", alternates: ["Image Playground", "Image Playground.app"]),
-        // The corpus entries with user aliases, so the property loop exercises the alias bands.
-        App(name: "Figma", userAlias: "fg"),
-        // The band-6 overreach repro: `term` inside `iterm` must not beat Terminal's own prefix.
-        App(name: "Kitty", userAlias: "iterm")
-    ]
-
-    static func app(_ name: String) -> App { apps.first { $0.name == name }! }
-
-    static func score(_ query: String, _ name: String) -> Int? {
-        SearchRelevance.score(query: query, fields: app(name).fields)
-    }
-
-    /// Mirrors AppIndex.rank: strongest field, plus the learned boost, then the alphabetical tiebreak.
-    static func rank(_ query: String, boosts: [String: Int] = [:]) -> [String] {
-        apps.compactMap { app -> (String, Int)? in
-            guard let s = SearchRelevance.score(query: query, fields: app.fields) else { return nil }
-            return (app.name, s + boosts[app.name, default: 0])
-        }
-        .sorted {
-            $0.1 != $1.1
-                ? $0.1 > $1.1
-                : $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending
-        }
-        .map(\.0)
-    }
-
-    static func above(_ ranked: [String], _ winner: String, _ loser: String) -> Bool {
-        guard let w = ranked.firstIndex(of: winner), let l = ranked.firstIndex(of: loser) else {
-            return false
-        }
-        return w < l
-    }
-
-    // MARK: - Harness
-
     nonisolated(unsafe) static var failures = 0
 
     static func check(_ description: String, _ condition: Bool, _ detail: @autoclosure () -> String = "") {
@@ -103,412 +15,542 @@ struct FuzzTest {
     }
 
     static func main() {
-        displayNameRanking()
-        fieldPriority()
-        userAliases()
-        alternateNameSanitizing()
-        identifierFields()
-        edgeCases()
-        propertyLoop()
-
+        scorer()
+        sensitivity()
+        transliteration()
+        naming()
+        categories()
+        comparator()
+        denseIndex()
+        suggestions()
+        sharedFold()
+        properties()
         print(failures == 0 ? "\nALL PASSED" : "\n\(failures) FAILED")
         exit(failures == 0 ? 0 : 1)
     }
 
-    // MARK: - Display-name ranking (unchanged behavior)
+    // MARK: - The scorer
 
-    static func displayNameRanking() {
-        print("\n# display-name ranking")
+    static func outcome(_ query: String, _ target: String) -> LauncherMatch.Outcome? {
+        LauncherMatch.match(
+            SearchText(query, transliterated: true), in: SearchText(target, transliterated: true))
+    }
 
-        let chrome = rank("chrome")
-        check("'chrome' top is Google Chrome", chrome.first == "Google Chrome", "got \(chrome)")
-        check("'chrome' does not include Chess", !chrome.contains("Chess"), "got \(chrome)")
+    static func score(_ query: String, _ target: String) -> Int? {
+        guard case .scored(let score, _)? = outcome(query, target) else { return nil }
+        return score
+    }
 
-        let ch = rank("ch")
-        check("'ch' includes Google Chrome", ch.contains("Google Chrome"), "got \(ch)")
-        check("'ch' includes Chess", ch.contains("Chess"))
-        check("'ch' ranks Chess (prefix) above Chrome", above(ch, "Chess", "Google Chrome"), "got \(ch)")
-
-        check("'saf' top is Safari", rank("saf").first == "Safari", "got \(rank("saf"))")
-        check("'tm' includes Time Machine", rank("tm").contains("Time Machine"), "got \(rank("tm"))")
+    static func scorer() {
+        print("# scorer")
+        let pinned: [(String, String, Int)] = [
+            ("s", "Safari", 4), ("s", "Clipboard History", 2), ("sa", "Safari", 6), ("sa", "Slack", 5),
+            ("vsc", "Visual Studio Code", 8), ("gc", "Google Chrome", 6), ("ss", "System Settings", 6),
+            ("settings", "System Settings", 17), ("settings", "Tinycast Settings", 17),
+            ("sett", "System Settings", 9), ("chrome", "Google Chrome", 13),
+            ("chrome", "Chrome Remote Desktop", 14), ("olu", "Set Volume", 6), ("code", "Xcode", 8),
+            ("code", "Visual Studio Code", 9), ("sfr", "Safari", 6), ("notes", "Search Notes", 11),
+            ("google chrome", "Google-Chrome", 28), ("vs code", "Visual Studio Code", 16)
+        ]
+        for (query, target, expected) in pinned {
+            let got = score(query, target)
+            check(
+                "'\(query)' scores \(expected) on \(target)", got == expected,
+                "got \(String(describing: got))")
+        }
+        check("an equal name is exact", outcome("brew", "Brew") == .exact)
+        check("a missing letter never matches", outcome("xyz", "Safari") == nil)
+        check("a query longer than the name never matches", outcome("safarix", "Safari") == nil)
+        check("an empty query matches nothing", outcome("", "Safari") == nil)
         check(
-            "'code' includes Visual Studio Code", rank("code").contains("Visual Studio Code"),
-            "got \(rank("code"))")
-        check("'terminal' exact top", rank("terminal").first == "Terminal")
-        check("'xyz' matches nothing", rank("xyz").isEmpty, "got \(rank("xyz"))")
+            "a query separator with nothing to land on is skipped",
+            outcome("vs-code", "vscode") == .scored(score: 14, skipped: 1),
+            "got \(String(describing: outcome("vs-code", "vscode")))")
+        check(
+            "matched separators never push a row past the name",
+            outcome("a--", "a---") == .scored(score: 8, skipped: 0))
+        check("a camelCase hump starts a word", score("p", "TablePlus") == 3)
+        check("…as does a letter after a digit", score("p", "1Password") == 3)
+        check("…and an acronym's last capital", score("e", "HTMLEditor") == 3)
+        check("…never the capital before it", score("l", "HTMLEditor") == 2)
+        check(
+            "…and survives a join",
+            SearchText("Search", transliterated: true).joined(
+                with: SearchText("OrbStack", transliterated: true)
+            )
+            .humps == [10])
+        check("…but not in a name the fold can shift", score("s", "CaféStack") == 2)
+    }
 
-        let defaultW = rank("w")
-        check(
-            "shorter Wick wins the default prefix tie", above(defaultW, "Wick", "WhatsApp"),
-            "got \(defaultW)")
-        let learnedW = rank("w", boosts: ["WhatsApp": 2_100])
-        check(
-            "learned boost promotes WhatsApp within the prefix tier",
-            above(learnedW, "WhatsApp", "Wick"), "got \(learnedW)")
+    // MARK: - Sensitivity
 
-        let marked = "\u{200E}WhatsApp"
-        check(
-            "invisible format mark does not demote a prefix match",
-            FuzzyMatch.score(query: "w", candidate: marked)
-                == FuzzyMatch.score(query: "w", candidate: "WhatsApp"))
-        check(
-            "learned marked WhatsApp can outrank Wick",
-            FuzzyMatch.score(query: "w", candidate: marked)! + 2_100
-                > FuzzyMatch.score(query: "w", candidate: "Wick")!)
+    static func passes(_ query: String, _ target: String, _ sensitivity: SearchSensitivity) -> Bool {
+        guard let outcome = outcome(query, target) else { return false }
+        return sensitivity.accepts(outcome, queryLength: SearchText(query, transliterated: true).units.count)
+    }
 
+    static func sensitivity() {
+        print("\n# sensitivity")
+        check("High turns away letter soup", !passes("olu", "Set Volume", .high))
+        check("…which Medium lets through", passes("olu", "Set Volume", .medium))
+        check("High turns away a mid-word hit", !passes("code", "Xcode", .high))
+        check("…which Medium lets through", passes("code", "Xcode", .medium))
+        check("…and so does the default", passes("pec", "Accessibility Inspector", .default))
+        check("High still finds initials", passes("vsc", "Visual Studio Code", .high))
+        check("High still finds a later word", passes("chrome", "Google Chrome", .high))
+        check("…and a camelCase one", passes("stack", "OrbStack", .high))
+        check("…one after a digit", passes("password", "1Password", .high))
+        check("…and one after an acronym", passes("edit", "BBEdit", .high))
+        check("one letter must start a word", !passes("s", "Clipboard History", .medium))
+        check("…and does when it does", passes("s", "Clipboard History", .low))
+        check("an exact hit passes every level", SearchSensitivity.high.accepts(.exact, queryLength: 99))
+        check("Low accepts any alignment", passes("sfr", "Safari", .low))
+    }
+
+    // MARK: - Transliteration
+
+    static func latin(_ raw: String) -> String { SearchText(raw, transliterated: true).string }
+
+    static func transliteration() {
+        print("\n# transliteration")
+        check("Han reads as spaced pinyin", latin("微信") == "wei xin", "got \(latin("微信"))")
+        check("…so its initials hit word starts", passes("wx", "微信", .high))
+        check("…and the joined reading hits too", passes("weixin", "微信", .high))
+        check("…and the name typed in Chinese is exact", outcome("微信", "微信") == .exact)
+        check("a longer reading keeps its syllables", latin("网易云音乐") == "wang yi yun yin le")
+        check("mixed script keeps the Latin word", latin("Safari浏览器") == "safari liu lan qi")
+        check("Cyrillic reads the way users type it", latin("Телеграм") == "telegram")
+        check("the kana romanize, the kanji drop", latin("メモ帳") == "memo", "got \(latin("メモ帳"))")
+        check("an accent folds away", latin("Café Noir") == "cafe noir")
+        check("full-width input folds", latin("ｃａｆｅ") == "cafe")
+        check("Latin text is left as folded", latin("Visual Studio Code") == "visual studio code")
+        check(
+            "invisible format scalars never reach the scorer",
+            latin("\u{200E}Safari") == "safari")
+    }
+
+    // MARK: - Naming
+
+    static func profile(
+        _ name: String, alternates: [String] = [], subtitle: String? = nil, keywords: [String] = []
+    ) -> SearchProfile {
+        var sources = EntryNaming.Sources(name: name)
+        sources.alternateTitles = alternates
+        sources.subtitle = subtitle
+        sources.keywords = keywords
+        return EntryNaming.profile(for: sources)
+    }
+
+    static func naming() {
+        print("\n# naming")
+        let settings = profile(
+            "System Settings", alternates: ["System Settings", "系统设置"],
+            keywords: ["ALTERNATE_NAME_1", "System Settings", "Preferences"])
+        check("an alternate repeating the title is dropped", settings.alternateTitles.count == 1)
+        check(
+            "an alternate title is folded, never transliterated",
+            settings.alternateTitles.first?.string == "系统设置")
+        check(
+            "a placeholder and a repeated name leave the keywords",
+            settings.keywords.map(\.string) == ["preferences"],
+            "got \(settings.keywords.map(\.string))")
+        let command = profile("Search", subtitle: "Brew")
+        check("a subtitle rides along", command.subtitle?.string == "brew")
+        check(
+            "title and subtitle join both ways as keywords",
+            command.keywords.map(\.string) == ["search brew", "brew search"])
+        check("a subtitle equal to the title is dropped", profile("Zed", subtitle: "zed").subtitle == nil)
+        check("an unbuilt entry matches nothing", SearchProfile.unnamed.title.isEmpty)
+    }
+
+    // MARK: - The comparator, rule by rule
+
+    struct Item {
+        let name: String
+        var alternates: [String] = []
+        var subtitle: String?
+        var keywords: [String] = []
+        var alias: String?
+        var frecency: Double = 1
+        /// Most recent last, as the store keeps them.
+        var terms: [String] = []
+        var priority = 3
+        var boosted: Set<String> = []
+
+        var profile: SearchProfile {
+            FuzzTest.profile(name, alternates: alternates, subtitle: subtitle, keywords: keywords)
+        }
+
+        var signals: LauncherOrder.Signals {
+            LauncherOrder.Signals(
+                alias: alias.map { SearchText($0, transliterated: false) },
+                usage: LauncherUsage(frecency: frecency, searchTerms: terms), priority: priority,
+                title: name, boostedTerms: boosted)
+        }
+    }
+
+    static func rank(
+        _ query: String, _ items: [Item], sensitivity: SearchSensitivity = .high
+    ) -> [String] {
+        LauncherOrder.ranked(
+            items, query: LauncherOrder.Query(query), sensitivity: sensitivity, limit: 200,
+            profile: \.profile, signals: \.signals
+        ).map(\.name)
+    }
+
+    static func first(_ query: String, _ items: [Item]) -> String? { rank(query, items).first }
+
+    static func comparator() {
+        print("\n# comparator")
+        check(
+            "an exact alias beats an exact title",
+            first("fig", [Item(name: "Fig"), Item(name: "Figma", alias: "fig")]) == "Figma")
+        check(
+            "a boosted term beats a stronger alignment",
+            first("chat", [Item(name: "ChatGPT"), Item(name: "AI Chat", boosted: ["ai", "chat"])])
+                == "AI Chat")
+        check(
+            "…until the other entry is the one the user opens more",
+            first(
+                "chat",
+                [
+                    Item(name: "ChatGPT", frecency: 300),
+                    Item(name: "AI Chat", frecency: 101, boosted: ["chat"])
+                ])
+                == "ChatGPT")
+        check(
+            "past three letters an exact title beats any habit",
+            first("notes", [Item(name: "Search Notes", frecency: 900, terms: ["notes"]), Item(name: "Notes")])
+                == "Notes")
+        check(
+            "at three letters an exact search term beats an exact title",
+            first("not", [Item(name: "Not"), Item(name: "Notes", frecency: 200, terms: ["not"])]) == "Notes")
+        check(
+            "an exact search term beats a stronger alignment",
+            first("sa", [Item(name: "Safari"), Item(name: "Slack", frecency: 150, terms: ["sa"])]) == "Slack")
+        check(
+            "an exact subtitle lists an extension's commands first",
+            first("brew", [Item(name: "Brewer"), Item(name: "Search", subtitle: "Brew")]) == "Search")
+        check(
+            "an alias prefix beats a stronger alignment",
+            first("sp", [Item(name: "Spotify"), Item(name: "Arc", alias: "spaces")]) == "Arc")
+        let appearance = Item(name: "Toggle System Appearance", alias: "toggle light / dark")
+        check(
+            "a later word of an alias finds its entry",
+            rank("dark", [Item(name: "Safari"), appearance]) == ["Toggle System Appearance"])
+        check(
+            "…ranked by its score, so a title prefix still wins",
+            rank("dark", [appearance, Item(name: "Darkroom")]) == ["Darkroom", "Toggle System Appearance"])
+        check(
+            "a mid-word alias hit stays under the sensitivity",
+            rank("term", [Item(name: "Ghostty", alias: "myterm")]).isEmpty)
+        check(
+            "a term the query prefixes reaches back to shorter queries",
+            first(
+                "s",
+                [Item(name: "Slack", frecency: 400), Item(name: "Safari", frecency: 101, terms: ["safari"])])
+                == "Safari")
+        let fantastical = Item(
+            name: "Fantastical", keywords: ["calendar"], frecency: 150, terms: ["cal"])
+        check(
+            "a term a longer query runs past still counts, three letters or more",
+            first("cale", [Item(name: "Calendar"), fantastical]) == "Fantastical")
+        var short = fantastical
+        short.terms = ["ca"]
+        check("…but not from two", first("cale", [Item(name: "Calendar"), short]) == "Calendar")
+        check(
+            "the stronger alignment wins before usage",
+            first("chrome", [Item(name: "Google Chrome", frecency: 800), Item(name: "Chrome Remote Desktop")])
+                == "Chrome Remote Desktop")
+        check(
+            "frecency breaks an equal alignment",
+            first("s", [Item(name: "Safari"), Item(name: "Slack", frecency: 200)]) == "Slack")
+        check(
+            "a title hit beats the same score on a subtitle",
+            first("ma", [Item(name: "Search", subtitle: "Maps"), Item(name: "Maps")]) == "Maps")
+        check(
+            "a title the query starts beats the same score skipping to a later word",
+            first("ap", [Item(name: "AirPort Utility"), Item(name: "App Store")]) == "App Store")
+        check(
+            "…ahead of kind priority",
+            first("dev", [Item(name: "Desk View", priority: 4), Item(name: "Device Hub", priority: 1)])
+                == "Device Hub")
+        check(
+            "…but behind frecency",
+            first("ap", [Item(name: "App Store"), Item(name: "AirPort Utility", frecency: 200)])
+                == "AirPort Utility")
+        check(
+            "an app wins the tie a Tinycast command ties it on",
+            first(
+                "settings",
+                [Item(name: "Tinycast Settings", priority: 3), Item(name: "System Settings", priority: 4)])
+                == "System Settings")
+        check(
+            "names compare numerically last",
+            rank("item", [Item(name: "Item 10"), Item(name: "Item 2")]) == ["Item 2", "Item 10"])
+        check(
+            "a keyword finds an entry without ranking it",
+            rank("ical", [Item(name: "Calendar", keywords: ["iCal"]), Item(name: "iCal Import")])
+                == ["iCal Import", "Calendar"])
+        check(
+            "an alternate title ranks, where a keyword only finds",
+            rank(
+                "sys",
+                [
+                    Item(name: "Utility", keywords: ["sysadmin"]),
+                    Item(name: "系统设置", alternates: ["System Settings"])
+                ])
+                == ["系统设置", "Utility"])
+        let usage = LauncherOrder.byUsage(
+            [
+                Item(name: "Zed"), Item(name: "Arc", alias: "a"), Item(name: "Maps", frecency: 300),
+                Item(name: "Mail", priority: 4)
+            ],
+            signals: \.signals
+        ).map(\.name)
+        check(
+            "the empty list reads frecency, then aliases, then kind, then name",
+            usage == ["Maps", "Arc", "Mail", "Zed"], "got \(usage)")
+    }
+
+    static func categories() {
+        print("\n# category queries")
+        let names = ["Window Management", "Window Command", "Window Layouts", "Window Layout"]
+            .map(FuzzyMatch.Candidate.init)
+        func matching(_ raw: String) -> [String] {
+            names.filter(LauncherOrder.CategoryQuery(raw).matches).map(\.text)
+        }
+        for query in ["win", "window", "WINDOW", "ｗｉｎｄｏｗ", "wíndow", " \twindow\n"] {
+            check("'\(query)' finds both window categories", matching(query).count == names.count)
+        }
+        check(
+            "a partial category phrase narrows to management",
+            matching("window man") == ["window management"])
+        check(
+            "category whitespace is folded once",
+            matching("window \t\n man") == ["window management"])
+        check("a later word finds its category", matching("manage") == ["window management"])
+        check("a label finds the same category", matching("window com") == ["window command"])
+        check("a later layout word stays specific", matching("lay") == ["window layouts", "window layout"])
+        for query in ["", " \t\n", "w", "wi", "ind", "wnd", "windowx", "window manager"] {
+            check("'\(query)' expands no categories", matching(query).isEmpty)
+        }
+        check(
+            "an exact short category is still valid",
+            LauncherOrder.CategoryQuery("AI").matches(FuzzyMatch.Candidate("AI")))
+        check(
+            "canonical category names share the launcher fold",
+            LauncherOrder.CategoryQuery(" \nＳＹＳＴＥＭ\tSettings ").name == "system settings")
+    }
+
+    // MARK: - A dense index
+
+    static let now = Date(timeIntervalSince1970: 2_000_000_000)
+
+    static let apps: [Item] = [
+        "Screen Sharing", "Calculator", "Xcode", "Google Chrome", "AirPort Utility", "Notes", "微信",
+        "网易云音乐", "Телеграм", "Café Noir"
+    ].map { Item(name: $0, priority: 4) }
+
+    /// Synthetic, and dense where names collide. A new complaint is a new case in `denseIndex`.
+    static let index: [Item] =
+        apps + [
+            Item(name: "Safari", alternates: ["浏览器"], priority: 4),
+            Item(name: "Slack", alternates: ["Work Chat"], priority: 4),
+            Item(
+                name: "System Settings", alternates: ["System Preferences", "Preferences", "Settings"],
+                priority: 4),
+            Item(name: "Calendar", alternates: ["iCal"], priority: 4),
+            Item(name: "Contacts", alternates: ["Address Book"], priority: 4),
+            Item(name: "Visual Studio Code", keywords: ["Code"], priority: 4),
+            Item(name: "Game Center", priority: 1), Item(name: "Sound", priority: 1),
+            Item(name: "Tinycast Settings"), Item(name: "Calculator History"),
+            Item(name: "AI Chat", boosted: ["ai", "chat"]), Item(name: "Search Files"),
+            Item(name: "Switch Windows"),
+            Item(name: "Search Notes"), Item(name: "Show Notes"), Item(name: "Set Volume"),
+            Item(name: "Search", subtitle: "Brew"), Item(name: "Upgrade", subtitle: "Brew"),
+            Item(name: "Signature Block", alternates: ["sig"])
+        ]
+
+    /// One pick, replayed through the shipped store's own arithmetic.
+    static func picking(_ name: String, by query: String, daysAgo: Double = 0) -> [Item] {
+        let at = now.addingTimeInterval(-daysAgo * 86_400)
+        let visit = LauncherVisit(
+            anchor: LauncherRankingStore.anchor(visitedWith: 1, at: at), openedAt: at,
+            searchTerms: query.isEmpty ? [] : [LauncherRankingStore.normalize(query)])
+        let usage = LauncherRankingStore.usage(of: visit, at: now)
+        return index.map { item in
+            guard item.name == name else { return item }
+            var picked = item
+            picked.frecency = usage.frecency
+            picked.terms = usage.searchTerms
+            return picked
+        }
+    }
+
+    static func denseIndex() {
+        print("\n# a dense index")
+        let cases: [(query: String, first: String, why: String)] = [
+            ("settings", "System Settings", "Apple's alternate name beats Tinycast Settings"),
+            ("sett", "System Settings", "…and so does its prefix"),
+            ("preferences", "System Settings", "an old name Apple still declares"),
+            ("ical", "Calendar", "a vendor's old name for itself"),
+            ("address book", "Contacts", "…two words long"),
+            ("work chat", "Slack", "a renamed bundle, by the name on disk"),
+            ("vsc", "Visual Studio Code", "initials of a three-word name"),
+            ("code", "Visual Studio Code", "a last word, where Xcode only matches mid-word"),
+            ("gc", "Google Chrome", "initials, over a pane sharing them"),
+            ("calcu", "Calculator", "an app wins the tie with the command named after it"),
+            ("ai", "AI Chat", "a boosted term over an app it ties"),
+            ("notes", "Notes", "past three letters, an exact title wins"),
+            ("cafe", "Café Noir", "an accent typed without it"), ("ｃａｆｅ", "Café Noir", "…full-width"),
+            ("微信", "微信", "a Chinese name typed in Chinese"), ("weixin", "微信", "…as pinyin"),
+            ("wx", "微信", "…as pinyin initials"), ("wyyyl", "网易云音乐", "…initials of a longer name"),
+            ("telegram", "Телеграм", "a Cyrillic name typed in Latin"),
+            ("sig", "Signature Block", "a snippet's keyword"),
+            ("brew", "Search", "an extension's title lists its commands"),
+            ("window", "Switch Windows", "an ordinary command still matches a category prefix")
+        ]
+        for test in cases {
+            let ranked = rank(test.query, index)
+            check("'\(test.query)' — \(test.why)", ranked.first == test.first, "got \(ranked.prefix(3))")
+        }
+        check("an alternate title mints no pinyin", !rank("ll", index).contains("Safari"))
+        check("High keeps letter soup out", !rank("olu", index).contains("Set Volume"))
+        check("a pick is learned for its query", rank("sa", picking("Slack", by: "sa")).first == "Slack")
+        check("…and recalled under a shorter one", rank("s", picking("Slack", by: "sa")).first == "Slack")
+        check(
+            "a stale habit stops steering",
+            rank("sa", picking("Slack", by: "sa", daysAgo: 18)).first == "Safari")
+        check(
+            "initials win once used",
+            rank("ss", picking("System Settings", by: "ss")).first == "System Settings")
+        check(
+            "a launch from the empty list is use too",
+            rank("c", picking("Contacts", by: "")).first == "Contacts")
+    }
+
+    // MARK: - Suggestions
+
+    static func suggestions() {
+        print("\n# suggestions")
+        struct Candidate {
+            let name: String
+            var frecency: Double = 1
+            var alias: String?
+            var hotKey = false
+            var priority: Int?
+            var installedMinutesAgo: Double?
+        }
+        func select(_ candidates: [Candidate]) -> [String] {
+            LauncherSuggestions.select(from: candidates, now: now) { candidate in
+                LauncherSuggestions.Traits(
+                    signals: LauncherOrder.Signals(
+                        alias: candidate.alias.map { SearchText($0, transliterated: false) },
+                        usage: LauncherUsage(frecency: candidate.frecency, searchTerms: []), priority: 3,
+                        title: candidate.name),
+                    installedAt: candidate.installedMinutesAgo.map { now.addingTimeInterval(-$0 * 60) },
+                    hasHotKey: candidate.hotKey, priority: candidate.priority)
+            }.map(\.name)
+        }
+
+        let commands = [
+            Candidate(name: "Search Files", priority: 70), Candidate(name: "Clipboard History", priority: 80),
+            Candidate(name: "My Schedule", priority: 60),
+            Candidate(name: "Search Emoji & Symbols", priority: 50),
+            Candidate(name: "Create Snippet", priority: 30)
+        ]
+        check(
+            "a new user gets the built-ins, highest priority first",
+            select(commands) == [
+                "Clipboard History", "Search Files", "My Schedule", "Search Emoji & Symbols", "Create Snippet"
+            ])
+        let used = [Candidate(name: "Safari", frecency: 40), Candidate(name: "Slack", frecency: 300)]
+        check(
+            "what the user opens comes first, most frecent first",
+            select(used + commands).prefix(3) == ["Slack", "Safari", "Clipboard History"])
+        let many = (1...8).map { Candidate(name: "App \($0)", frecency: Double(100 + $0)) }
+        check("never more than five", select(many + commands).count == LauncherSuggestions.limit)
+        check(
+            "a bound shortcut keeps an entry out",
+            !select([Candidate(name: "Slack", frecency: 300, hotKey: true)] + commands).contains("Slack"))
+        check(
+            "the fill skips a built-in the user already aliased",
+            select([Candidate(name: "Clipboard History", alias: "cb", priority: 80)]).isEmpty)
+        let fresh = [
+            Candidate(name: "New One", installedMinutesAgo: 1),
+            Candidate(name: "New Two", installedMinutesAgo: 2),
+            Candidate(name: "New Three", installedMinutesAgo: 3),
+            Candidate(name: "Old", installedMinutesAgo: 30)
+        ]
+        let picked = select(fresh + used)
+        check(
+            "up to two fresh installs lead, then the user's habits",
+            picked == ["New One", "New Three", "Slack", "Safari"], "got \(picked)")
+        check("an install older than five minutes is not fresh", !picked.contains("Old"))
+    }
+
+    // MARK: - The fold other searches share
+
+    static func sharedFold() {
+        print("\n# shared fold")
         check("exact tier", FuzzyMatch.match(query: "chess", candidate: "Chess")?.tier == .exact)
         check("prefix tier", FuzzyMatch.match(query: "che", candidate: "Chess")?.tier == .prefix)
         check(
-            "word-start tier",
-            FuzzyMatch.match(query: "chrome", candidate: "Google Chrome")?.tier == .wordStart)
+            "word-start tier", FuzzyMatch.match(query: "chr", candidate: "Google Chrome")?.tier == .wordStart)
+        check("substring tier", FuzzyMatch.match(query: "hes", candidate: "Chess")?.tier == .substring)
+        check("subsequence tier", FuzzyMatch.match(query: "css", candidate: "Chess")?.tier == .subsequence)
+        check("the fold is width-insensitive", FuzzyMatch.normalized("ｃａｆｅ") == "cafe")
         check(
-            "substring tier", FuzzyMatch.match(query: "afar", candidate: "Safari")?.tier == .substring)
-        check(
-            "subsequence tier",
-            FuzzyMatch.match(query: "tm", candidate: "Time Machine")?.tier == .subsequence)
-        check("no match is nil", FuzzyMatch.match(query: "zzz", candidate: "Chess") == nil)
-        check(
-            "only subsequence is non-literal",
-            [FuzzyMatch.Tier.exact, .prefix, .wordStart, .substring].allSatisfy(\.isLiteral)
-                && !FuzzyMatch.Tier.subsequence.isLiteral)
+            "the fold is locale-independent",
+            FuzzyMatch.normalized("I") == "i"
+                && FuzzyMatch.normalized("I")
+                    != "I".folding(options: [.caseInsensitive], locale: Locale(identifier: "tr_TR"))
+        )
     }
 
-    // MARK: - Field priority
+    // MARK: - Randomized properties
 
-    static func fieldPriority() {
-        print("\n# field priority")
-
-        // The decision this feature turns on: an alias the vendor declared beats letter soup.
-        let codex = rank("codex")
-        check("'codex' finds ChatGPT at all", codex.contains("ChatGPT"), "got \(codex)")
-        check(
-            "'codex' ranks the exact alias above a subsequence display-name hit",
-            above(codex, "ChatGPT", "Code Explorer"), "got \(codex)")
-
-        // ...but a strong display-name match still wins outright.
-        let code = rank("code")
-        check(
-            "'code' ranks the prefix display name above the alias holder",
-            above(code, "Code Explorer", "ChatGPT"), "got \(code)")
-
-        let ical = rank("ical")
-        check("'ical' finds Calendar by alias", ical.first == "Calendar", "got \(ical)")
-        check("'ibooks' finds Books by alias", rank("ibooks").first == "Books", "got \(rank("ibooks"))")
-        check(
-            "'address book' finds Contacts by alias", rank("address book").first == "Contacts",
-            "got \(rank("address book"))")
-        check("'browser' finds Safari by alias", rank("browser").first == "Safari", "got \(rank("browser"))")
-        check("non-Latin alias matches", rank("浏览器").first == "Safari", "got \(rank("浏览器"))")
-        check(
-            "'system preferences' finds System Settings by alias",
-            rank("system preferences").first == "System Settings")
-
-        // Band ordering, asserted directly on the scores.
-        let userAlias = score("fg", "Figma")!
-        let nameLiteral = score("chatgpt", "ChatGPT")!
-        let aliasLiteral = score("codex", "ChatGPT")!
-        let nameSubsequence = score("codex", "Code Explorer")!
-        let aliasSubsequence = score("aplbks", "Books")!
-        let identifier = score("openai", "ChatGPT")!
-        let executable = score("electron", "Visual Studio Code")!
-        let ordered = [
-            userAlias, nameLiteral, aliasLiteral, nameSubsequence, aliasSubsequence, identifier,
-            executable
-        ]
-        check(
-            "bands are strictly ordered: user-alias > name > alias > name-fuzzy > alias-fuzzy > id > exec",
-            zip(ordered, ordered.dropFirst()).allSatisfy { $0 > $1 }, "got \(ordered)")
-        check(
-            "every band is a whole stride apart",
-            zip(ordered, ordered.dropFirst()).allSatisfy {
-                $0 - $1 > FuzzyMatch.maximumScore
-            }, "got \(ordered)")
-
-        // The strongest field wins; a weaker field on the same entry never drags it down.
-        check(
-            "Safari's exact display name beats its own alias band",
-            score("safari", "Safari")! >= 5 * SearchRelevance.bandStride)
-        check(
-            "an entry with no matching field scores nil", score("qqqq", "Safari") == nil)
-    }
-
-    // MARK: - User aliases
-
-    static func userAliases() {
-        print("\n# user aliases")
-
-        let fg = rank("fg")
-        check("'fg' finds Figma by user alias", fg.first == "Figma", "got \(fg)")
-        check(
-            "the user alias sits in the band above the display name",
-            score("fg", "Figma")! >= 6 * SearchRelevance.bandStride)
-        check(
-            "a user alias outranks another entry's exact display name",
-            SearchRelevance.score(query: "code", fields: SearchFields(names: ["Mail"], userAlias: "code"))!
-                > SearchRelevance.score(query: "code", fields: SearchFields(names: ["Code"]))!)
-        check(
-            "a user alias matches literally: exact, prefix and substring",
-            ["mail2", "mai", "ail"].allSatisfy {
-                SearchRelevance.score(
-                    query: $0, fields: SearchFields(names: ["\u{FFFF}"], userAlias: "mail2")) != nil
-            })
-        check(
-            "a user alias never subsequence-matches",
-            SearchRelevance.score(
-                query: "fga", fields: SearchFields(names: ["\u{FFFF}"], userAlias: "figalias")) == nil)
-        let figma = SearchRelevance.score(query: "figma", fields: app("Figma").fields)!
-        check(
-            "the strongest field still wins on an aliased entry",
-            figma >= 5 * SearchRelevance.bandStride && figma < 6 * SearchRelevance.bandStride)
-
-        // Anchoring: only exact and prefix hits earn band 6; inside hits rank with vendor aliases.
-        let term = rank("term")
-        check(
-            "an inside alias hit does not beat another entry's own prefix",
-            above(term, "Terminal", "Kitty"), "got \(term)")
-        check("...but the aliased entry is still findable", term.contains("Kitty"), "got \(term)")
-        check("an alias prefix hit still ranks first", rank("ite").first == "Kitty", "got \(rank("ite"))")
-        let inside = SearchRelevance.score(
-            query: "ail", fields: SearchFields(names: ["\u{FFFF}"], userAlias: "mail2"))!
-        check(
-            "an inside alias hit ranks in the vendor-alias band",
-            inside >= 4 * SearchRelevance.bandStride && inside < 5 * SearchRelevance.bandStride)
-    }
-
-    // MARK: - Spotlight junk
-
-    static func alternateNameSanitizing() {
-        print("\n# alternate-name sanitizing")
-
-        let app = rank("app")
-        check("'app' still finds App Store", app.first == "App Store", "got \(app)")
-        // The tail here is `com.apple.*` bundle ids, which the identifier band keeps below every name hit.
-        check(
-            "'app' matches nothing by display name that isn't a real hit",
-            app.filter { score("app", $0)! >= 4 * SearchRelevance.bandStride }
-                == ["App Store", "WhatsApp", "Books"], "got \(app)")
-        check(
-            "'.app' alternates are dropped entirely",
-            !apps.contains { $0.fields.alternateNames.contains { $0.hasSuffix(".app") } })
-        check("'alternate' matches nothing", rank("alternate").isEmpty, "got \(rank("alternate"))")
-        check(
-            "the ALL_CAPS placeholder is dropped", Self.app("Maps").fields.alternateNames.isEmpty)
-        check(
-            "an alternate repeating the display name is dropped",
-            Self.app("Image Playground").fields.alternateNames.isEmpty)
-        check(
-            "real aliases survive", Self.app("Books").fields.alternateNames == ["Apple Books", "iBooks"])
-
-        let sanitize = SearchFields.usableAlternateNames
-        check(
-            "empty and whitespace-only names are dropped",
-            sanitize(["", "   ", "\n"], "X", "X.app").isEmpty)
-        check(
-            "case-insensitive dedupe keeps the first spelling",
-            sanitize(["iBooks", "IBOOKS", "ibooks"], "Books", "Books.app") == ["iBooks"])
-        check("names are trimmed", sanitize(["  iCal  "], "Calendar", "Calendar.app") == ["iCal"])
-        check(
-            "a name matching the file name but not the display name is still dropped",
-            sanitize(["Music.app"], "Apple Music", "Music.app").isEmpty)
-        check(
-            "an ALL_CAPS name without an underscore is kept",
-            sanitize(["IINA"], "Media Player", "mpv.app") == ["IINA"])
-        check(
-            "a multi-word name with an underscore is kept",
-            sanitize(["My_App Pro"], "X", "X.app") == ["My_App Pro"])
-    }
-
-    // MARK: - Identifier fields
-
-    static func identifierFields() {
-        print("\n# identifier fields")
-
-        check("bundle-id vendor component matches", rank("openai").contains("ChatGPT"))
-        check("the trimmed bundle id matches as a prefix", rank("openai.co").contains("ChatGPT"))
-        check("a pasted full bundle id matches", rank("com.openai.codex").contains("ChatGPT"))
-        check(
-            "bundle ids do not subsequence-match",
-            !rank("cop").contains("ChatGPT"), "got \(rank("cop"))")
-        check(
-            "a short query does not drag in every reverse-DNS id",
-            !rank("cml").contains("Photos"), "got \(rank("cml"))")
-        // These queries still hit display names, so the check is that nothing lands in the identifier band.
-        func identifierHits(_ query: String) -> [String] {
-            rank(query).filter { score(query, $0)! < 2 * SearchRelevance.bandStride }
-        }
-        check(
-            "'com' matches nothing by bundle id", identifierHits("com").isEmpty,
-            "got \(identifierHits("com"))")
-        check(
-            "'co' matches nothing by bundle id", identifierHits("co").isEmpty, "got \(identifierHits("co"))")
-        check("'com.' matches nothing by bundle id", identifierHits("com.").isEmpty)
-        check(
-            "a bundle id with no dot still matches",
-            SearchRelevance.score(query: "solo", fields: SearchFields(names: ["X"], bundleID: "solo"))
-                != nil)
-        check("executable name matches literally", rank("electron").contains("Visual Studio Code"))
-        check(
-            "executable name does not subsequence-match",
-            !rank("etn").contains("Visual Studio Code"), "got \(rank("etn"))")
-
-        let noID = SearchFields(names: ["Solo"])
-        check(
-            "an entry with no bundle id or executable still matches on its name",
-            SearchRelevance.score(query: "solo", fields: noID) != nil)
-        check("...and matches nothing else", SearchRelevance.score(query: "com", fields: noID) == nil)
-    }
-
-    // MARK: - Edge cases
-
-    static func edgeCases() {
-        print("\n# edge cases")
-
-        let fields = app("Safari").fields
-        check("empty query scores 0", SearchRelevance.score(query: "", fields: fields) == 0)
-        check(
-            "empty query never returns nil for any entry",
-            apps.allSatisfy { SearchRelevance.score(query: "", fields: $0.fields) != nil })
-        check(
-            "a query longer than every candidate matches nothing",
-            rank(String(repeating: "z", count: 500)).isEmpty)
-        check("emoji query does not trap", rank("🙂🙃") == [])
-        check(
-            "an RTL query does not trap",
-            SearchRelevance.score(query: "\u{202E}safari\u{202C}", fields: fields) != nil)
-        check(
-            "a format-scalar-only query is treated as empty",
-            SearchRelevance.score(query: "\u{200E}", fields: fields) == 0)
-        check(
-            "an entry with every field empty matches nothing",
-            SearchRelevance.score(query: "x", fields: SearchFields(names: [])) == nil)
-        check(
-            "a snippet keyword ranks at display-name strength",
-            SearchRelevance.score(
-                query: "sig", fields: SearchFields(names: ["Signature Block", "sig"]))!
-                >= 5 * SearchRelevance.bandStride)
-
-        check(
-            "ranking is deterministic across repeats",
-            (0..<50).allSatisfy { _ in rank("s") == rank("s") })
-        check(
-            "the learned boost cap cannot cross a FuzzyMatch tier",
-            LauncherRankingBoostCap < 10_000)
-        check(
-            "the learned boost cap cannot cross a band",
-            LauncherRankingBoostCap < SearchRelevance.bandStride - FuzzyMatch.maximumScore)
-    }
-
-    /// Mirrors LauncherRankingStore.maximumBoost; Tests/ranking-test.swift asserts the real one.
-    static let LauncherRankingBoostCap = 4_500
-
-    // MARK: - Randomized property loop
-
-    /// Seeded so a failure reproduces exactly rather than vanishing on the next run.
-    struct Random {
+    /// Seeded, so a failure reproduces on the next run instead of vanishing.
+    struct SplitMix64: RandomNumberGenerator {
         private var state: UInt64
         init(seed: UInt64) { state = seed }
         mutating func next() -> UInt64 {
-            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
-            return state >> 16
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
         }
-        mutating func int(_ bound: Int) -> Int { bound <= 0 ? 0 : Int(next() % UInt64(bound)) }
-        mutating func element<T>(_ xs: [T]) -> T { xs[int(xs.count)] }
     }
 
-    static func propertyLoop() {
-        print("\n# randomized property loop")
-
-        let alphabet = Array("abcdefghijklmnopqrstuvwxyz .-_0123456789浏览器사파리🙂\u{200E}\u{0301}")
-        let allText = apps.flatMap { app -> [String] in
-            [app.name] + app.alternates
-                + [app.bundleID, app.executable, app.userAlias].compactMap { $0 }
-        }
-        var rng = Random(seed: 0x5EED_1234_ABCD_0001)
-
-        var bandViolations = 0
+    static func properties() {
+        print("\n# properties")
+        let names = [
+            "Safari", "System Settings", "Visual Studio Code", "Google Chrome", "Clipboard History",
+            "Search Emoji & Symbols", "Tinycast Settings", "Activity Monitor", "Wi-Fi", "Date & Time",
+            "Move to Next Display", "1Password 7", "Set Volume to 25%", "微信", "Телеграм"
+        ]
+        let alphabet = Array("abcdefghijklmnopqrstuvwxyz -.")
+        var generator = SplitMix64(seed: 0x5EED_1234_ABCD_0001)
         var nondeterministic = 0
-        var unstableOrder = 0
-        var boostCrossedBand = 0
-        var matched = 0
-        let iterations = 100_000
-
-        for i in 0..<iterations {
-            // Three query shapes: a real slice of some field, a scrambled subsequence of one, and junk.
-            let query: String
-            switch i % 3 {
-            case 0:
-                let source = Array(rng.element(allText))
-                let start = rng.int(max(1, source.count))
-                let length = 1 + rng.int(max(1, source.count - start))
-                query = String(source[start..<min(source.count, start + length)])
-            case 1:
-                let source = Array(rng.element(allText))
-                query = String(source.enumerated().compactMap { rng.int(3) == 0 ? $0.element : nil })
-            default:
-                query = String((0..<(1 + rng.int(8))).map { _ in rng.element(alphabet) })
-            }
-
-            for app in apps {
-                let fields = app.fields
-                guard let score = SearchRelevance.score(query: query, fields: fields) else { continue }
-                matched += 1
-
-                // Every score sits inside exactly one band, and the boost cap cannot lift it out.
-                let band = score / SearchRelevance.bandStride
-                let offset = score - band * SearchRelevance.bandStride
-                if offset < 0 || offset > FuzzyMatch.maximumScore || band > 6 { bandViolations += 1 }
-                if (score + LauncherRankingBoostCap) / SearchRelevance.bandStride != band {
-                    boostCrossedBand += 1
-                }
-                if SearchRelevance.score(query: query, fields: fields) != score { nondeterministic += 1 }
-            }
-
-            if i % 97 == 0, rank(query) != rank(query) { unstableOrder += 1 }
-        }
-
-        check("scores always sit inside their band", bandViolations == 0, "\(bandViolations) violations")
-        check(
-            "the max learned boost never lifts a score out of its band", boostCrossedBand == 0,
-            "\(boostCrossedBand) crossings")
-        check("scoring is deterministic", nondeterministic == 0, "\(nondeterministic) mismatches")
-        check("rank order is stable", unstableOrder == 0, "\(unstableOrder) unstable")
-        check(
-            "the loop actually exercised matches", matched > iterations / 10,
-            "only \(matched) matches over \(iterations) queries")
-
-        // The band ordering must hold for every pair of fields, not just the sampled corpus.
-        var inversions = 0
-        var rng2 = Random(seed: 0x5EED_1234_ABCD_0002)
+        var widened = 0
+        var strayed = 0
         for _ in 0..<20_000 {
-            let text = rng2.element(allText)
-            let asName = SearchFields(names: [text])
-            let asUserAlias = SearchFields(names: ["\u{FFFF}"], userAlias: text)
-            let asAlternate = SearchFields(names: ["\u{FFFF}"], alternateNames: [text])
-            let asBundleID = SearchFields(names: ["\u{FFFF}"], bundleID: text)
-            let asExecutable = SearchFields(names: ["\u{FFFF}"], executableName: text)
-            let source = Array(text)
-            let start = rng2.int(max(1, source.count))
-            let query = String(source[start..<min(source.count, start + 1 + rng2.int(6))])
-            guard !query.isEmpty,
-                let name = SearchRelevance.score(query: query, fields: asName)
-            else { continue }
-            let userAlias = SearchRelevance.score(query: query, fields: asUserAlias)
-            let alternate = SearchRelevance.score(query: query, fields: asAlternate)
-            let bundleID = SearchRelevance.score(query: query, fields: asBundleID)
-            let executable = SearchRelevance.score(query: query, fields: asExecutable)
-            // Same text, weaker field: the score must drop, and identifier fields may drop out entirely.
-            // An anchored alias hit outranks the name; an inside hit ranks below with vendor aliases.
-            if let userAlias, let tier = FuzzyMatch.match(query: query, candidate: text)?.tier,
-                tier.isAnchored ? userAlias <= name : userAlias >= name
-            {
-                inversions += 1
+            let name = names.randomElement(using: &generator)!
+            let length = Int.random(in: 1...6, using: &generator)
+            let query = String((0..<length).map { _ in alphabet.randomElement(using: &generator)! })
+            let first = outcome(query, name)
+            if first != outcome(query, name) { nondeterministic += 1 }
+            // Extending a query can only narrow what it matches, once it holds a letter to match.
+            if first == nil, query.contains(where: \.isLetter), outcome(query + "a", name) != nil {
+                widened += 1
             }
-            if let alternate, alternate >= name { inversions += 1 }
-            if let bundleID, let alternate, bundleID >= alternate { inversions += 1 }
-            if let executable, let bundleID, executable >= bundleID { inversions += 1 }
+            let ceiling = 4 + 3 * (query.utf16.count - 1)
+            if case .scored(let score, _)? = first, score < 1 || score > ceiling { strayed += 1 }
         }
-        check(
-            "the same text always scores lower in a weaker field", inversions == 0, "\(inversions) inversions"
-        )
+        check("scoring is deterministic", nondeterministic == 0, "\(nondeterministic) mismatches")
+        check("typing more never widens a match", widened == 0, "\(widened) widened")
+        check("a score stays within its alignment's bounds", strayed == 0, "\(strayed) strayed")
     }
 }

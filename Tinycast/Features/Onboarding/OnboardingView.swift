@@ -14,26 +14,35 @@ struct OnboardingView: View {
     private let refreshTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     private static let lastStep = 3
-    /// Fixed content size, so `NSHostingView` can't size the window to its ideal height.
-    static let windowSize = CGSize(width: 520, height: 400)
+    static let width: CGFloat = 520
+    /// Only until the first layout measures the real one, which is what the window then takes.
+    static let initialSize = CGSize(width: width, height: 352)
 
     var body: some View {
         VStack(spacing: Theme.Spacing.lg) {
             hero
             stepContent
-                .frame(maxHeight: .infinity, alignment: .top)
             footer
         }
-        .padding(.top, Theme.Spacing.xxl)
+        // Less on top: the title bar adds 32pt, and the lights must be cleared.
+        .padding(.top, Theme.Spacing.xs)
         .padding([.horizontal, .bottom], Theme.Spacing.xxl)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
+        // The ideal height, not the window's, so sizing to it converges instead of feeding back.
+        .fixedSize(horizontal: false, vertical: true)
+        .onGeometryChange(for: CGFloat.self) {
+            $0.size.height
+        } action: {
+            core.onboardingCoordinator.fit(height: $0)
+        }
+        // Only the gradient reaches under the titlebar; the content stays in the safe area.
         .background(
             LinearGradient(
                 colors: [Theme.Colors.sheen, Color.clear],
-                startPoint: .top, endPoint: .center)
+                startPoint: .top, endPoint: .center
+            )
+            .ignoresSafeArea()
         )
-        // Extend under the titlebar, so window height equals the fixed content height.
-        .ignoresSafeArea()
         // Onboarding's shortcut step has a recorder too, and it isn't inside a `SettingsPane`.
         .shortcutRecorderPopoverHost()
         .animation(.easeInOut(duration: 0.2), value: step)
@@ -52,7 +61,7 @@ struct OnboardingView: View {
             VStack(spacing: Theme.Spacing.xs) {
                 Text(title)
                     .font(.title2.weight(.bold))
-                Text(subtitle)
+                subtitle
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -78,18 +87,18 @@ struct OnboardingView: View {
 
     private var title: String {
         switch step {
-        case 0: "Welcome to Tinycast"
-        case 1: "Enable Pasting"
-        case 2: "Import from Raycast"
-        default: "You're all set"
+        case 0: String(localized: "Welcome to Tinycast")
+        case 1: String(localized: "Enable Pasting")
+        case 2: String(localized: "Import from Raycast")
+        default: String(localized: "You're all set")
         }
     }
 
-    private var subtitle: String {
+    private var subtitle: Text {
         switch step {
-        case 0: "Set a shortcut to summon the launcher from anywhere."
-        case 1: "Let Tinycast paste items back into the app you were using."
-        case 2: "Bring your shortcuts, favorites, and clipboard history along."
+        case 0: Text("Set a shortcut to summon the launcher from anywhere.")
+        case 1: Text("Let Tinycast paste items back into the app you were using.")
+        case 2: Text("Bring your shortcuts, favorites, and clipboard history along.")
         default: readyMessage
         }
     }
@@ -110,11 +119,11 @@ struct OnboardingView: View {
         }
     }
 
-    private var readyMessage: String {
+    private var readyMessage: Text {
         if let caps = hotKeys.binding(for: .togglePalette)?.keycaps {
-            return "Press \(caps.joined()) anytime to start using Tinycast."
+            return Text("Press \(KeyCapChip.inlineText(caps)) anytime to start using Tinycast.")
         }
-        return "Tinycast is ready. Set a shortcut in Settings to summon it."
+        return Text("Tinycast is ready. Set a shortcut in Settings to summon it.")
     }
 
     // MARK: - Step content
@@ -134,23 +143,23 @@ struct OnboardingView: View {
         return VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             OnboardingCard {
                 OnboardingRow(
-                    title: "App Launcher",
-                    subtitle: "Press this shortcut to open Tinycast.",
+                    title: String(localized: "onboarding-open-launcher", defaultValue: "App Launcher"),
+                    subtitle: String(localized: "Press this shortcut to open Tinycast."),
                     systemImage: "magnifyingglass", tint: .blue
                 ) {
                     ShortcutRecorder(action: .togglePalette)
                 }
                 OnboardingDivider()
                 OnboardingRow(
-                    title: "Launch at login",
-                    subtitle: "Start Tinycast automatically when you log in.",
+                    title: String(localized: "Launch at login"),
+                    subtitle: String(localized: "Start Tinycast automatically when you log in."),
                     systemImage: "power", tint: .green
                 ) {
                     Toggle("", isOn: $settings.launchAtLogin)
                         .labelsHidden().toggleStyle(.switch).controlSize(.small)
                 }
             }
-            caption("You can change these anytime in Settings.")
+            caption(String(localized: "You can change these anytime in Settings."))
         }
     }
 
@@ -158,15 +167,15 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             OnboardingCard {
                 OnboardingRow(
-                    title: "Accessibility",
-                    subtitle:
-                        "Allows pasting clipboard items and expanded snippets into active apps.",
+                    title: String(localized: "Accessibility"),
+                    subtitle: String(
+                        localized: "Allows pasting clipboard items and expanded snippets into active apps."),
                     systemImage: "accessibility", tint: .blue
                 ) {
                     statusBadge
                 }
             }
-            caption("Optional — you can enable this later in Settings › Permissions.")
+            caption(String(localized: "Optional — you can enable this later in Settings › Permissions."))
         }
     }
 
@@ -174,7 +183,7 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             OnboardingCard {
                 OnboardingRow(
-                    title: "Raycast Export",
+                    title: String(localized: "Raycast Export"),
                     subtitle: model.fileSubtitle,
                     systemImage: "doc.badge.gearshape", tint: .orange
                 ) {
@@ -182,28 +191,28 @@ struct OnboardingView: View {
                 }
                 OnboardingDivider()
                 OnboardingRow(
-                    title: "Passphrase",
-                    subtitle: "The password you set when exporting from Raycast.",
+                    title: String(localized: "Passphrase"),
+                    subtitle: String(localized: "The password you set when exporting from Raycast."),
                     systemImage: "key", tint: .gray
                 ) {
-                    SecureField("Passphrase", text: $model.passphrase)
+                    RevealableSecureField(title: String(localized: "Passphrase"), text: $model.passphrase)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 150)
                         .onSubmit { model.run(core: core) }
                 }
             }
-            RaycastImportSelection(selection: $model.selection, format: model.format)
+            RaycastImportSelection(selection: $model.selection)
                 .padding(.horizontal, Theme.Spacing.xs)
             if let status = model.status {
                 importStatus(status)
             } else {
-                caption("Optional — you can import later in Settings › Backup.")
+                caption(String(localized: "Optional — you can import later in Settings › Backup."))
             }
         }
     }
 
     private var doneStep: some View {
-        caption("Everything's ready. Hit Get Started to open the launcher.")
+        caption(String(localized: "Everything's ready. Hit Get Started to open the launcher."))
             .frame(maxWidth: .infinity, alignment: .center)
     }
 
@@ -262,17 +271,17 @@ struct OnboardingView: View {
 
     private var primaryTitle: String {
         switch step {
-        case 0: "Continue"
-        case 1: accessibilityTrusted ? "Continue" : "Grant Access"
+        case 0: String(localized: "Continue")
+        case 1: accessibilityTrusted ? String(localized: "Continue") : String(localized: "Grant Access")
         case 2:
             if model.didImport {
-                "Continue"
+                String(localized: "Continue")
             } else if model.importing {
-                "Importing…"
+                String(localized: "Importing…")
             } else {
-                "Import"
+                String(localized: "Import")
             }
-        default: "Get Started"
+        default: String(localized: "Get Started")
         }
     }
 
@@ -366,9 +375,11 @@ final class OnboardingModel {
     var importing = false
     var status: ImportStatus?
     var selection: RaycastImportOptions = .all
-    var format: RaycastFormat?
+    var isRaycastExport = false
 
-    var canImport: Bool { format != nil && !passphrase.isEmpty && !selection.isEmpty && !importing }
+    var canImport: Bool {
+        isRaycastExport && !passphrase.isEmpty && !selection.isEmpty && !importing
+    }
     var didImport: Bool {
         if case .success = status { return true }
         return false
@@ -376,15 +387,17 @@ final class OnboardingModel {
 
     var fileSubtitle: String {
         guard let name = file?.lastPathComponent else {
-            return "Choose a .rayconfig file exported from Raycast."
+            return String(localized: "Choose a .rayconfig file exported from Raycast v2.0 or newer.")
         }
-        return "\(name) — \(format?.title ?? "not a Raycast export")"
+        return isRaycastExport
+            ? String(localized: "\(name) — Raycast export")
+            : String(localized: "\(name) — not a Raycast export")
     }
 
     func chooseFile() {
         guard let url = BackupActions.pickRaycastFile() else { return }
         file = url
-        format = BackupActions.detectRaycastFormat(of: url)
+        isRaycastExport = BackupActions.isRaycastExport(url)
         status = nil
     }
 
@@ -397,14 +410,7 @@ final class OnboardingModel {
             do {
                 let outcome = try await BackupActions.importRaycast(
                     core: core, file: file, passphrase: passphrase, options: selection)
-                var message = BackupActions.summaryText(outcome.summary)
-                if outcome.clipboardImported > 0 {
-                    message += " Imported \(outcome.clipboardImported) clipboard entries."
-                }
-                if outcome.missingImages > 0 {
-                    message += " \(outcome.missingImages) images were unavailable and skipped."
-                }
-                status = .success(message)
+                status = .success(BackupActions.raycastText(outcome))
                 passphrase = ""
             } catch {
                 status = .failure(error.localizedDescription)

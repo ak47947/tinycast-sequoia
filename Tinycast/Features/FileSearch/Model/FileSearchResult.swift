@@ -5,16 +5,30 @@ struct FileSearchResult: Identifiable, Equatable, Sendable {
     let url: URL
     let name: String
     let parentPath: String
+    /// The enclosing folder's own name, which is what tells two same-named folders apart.
+    let parentName: String
     let isDirectory: Bool
 
+    var favoriteKey: String {
+        URL(filePath: id, directoryHint: isDirectory ? .isDirectory : .notDirectory).absoluteString
+    }
+
+    init?(favoriteKey: String, homeDirectory: URL) {
+        guard favoriteKey.hasPrefix("file:///"), let url = URL(string: favoriteKey),
+            url.query == nil, url.fragment == nil
+        else { return nil }
+        self.init(url: url, isDirectory: url.hasDirectoryPath, homeDirectory: homeDirectory)
+    }
+
+    /// `url` is taken as given: index paths are already real, and standardizing one costs a stat.
     init(url: URL, isDirectory: Bool, homeDirectory: URL) {
-        let url = url.standardizedFileURL
+        let parent = url.deletingLastPathComponent()
         self.id = url.path
         self.url = url
         self.name = url.lastPathComponent
         self.parentPath = Self.abbreviate(
-            url.deletingLastPathComponent().path,
-            homePath: homeDirectory.standardizedFileURL.path)
+            parent.path, homePath: homeDirectory.path)
+        self.parentName = parent.lastPathComponent
         self.isDirectory = isDirectory
     }
 

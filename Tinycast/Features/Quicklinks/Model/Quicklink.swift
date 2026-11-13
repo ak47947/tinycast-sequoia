@@ -1,6 +1,5 @@
 import Foundation
 
-/// A user-authored URL, search, file, folder or deeplink, surfaced as a launcher command.
 struct Quicklink: Codable, Hashable, Identifiable, Sendable {
     static let entryIDPrefix = "quicklink:"
     /// Fallback glyph when there is no icon and the destination can't be detected.
@@ -14,6 +13,8 @@ struct Quicklink: Codable, Hashable, Identifiable, Sendable {
     var openWithBundleID: String?
     /// SF Symbol override; nil takes the glyph the detected destination suggests.
     var iconSymbol: String?
+    /// Off keeps the row and everything attached to it, but nothing may offer or open it.
+    var isEnabled: Bool
     var showsInRootSearch: Bool
     /// A stamp rather than a flag, so the pinned block is ordered by *when* you pinned.
     var pinnedAt: Date?
@@ -21,20 +22,25 @@ struct Quicklink: Codable, Hashable, Identifiable, Sendable {
 
     init(
         id: UUID = UUID(), name: String, link: String, openWithBundleID: String? = nil,
-        iconSymbol: String? = nil, showsInRootSearch: Bool = true, pinnedAt: Date? = nil,
-        createdAt: Date = Date()
+        iconSymbol: String? = nil, isEnabled: Bool = true, showsInRootSearch: Bool = true,
+        pinnedAt: Date? = nil, createdAt: Date = Date()
     ) {
         self.id = id
         self.name = name
         self.link = link
         self.openWithBundleID = openWithBundleID
         self.iconSymbol = iconSymbol
+        self.isEnabled = isEnabled
         self.showsInRootSearch = showsInRootSearch
         self.pinnedAt = pinnedAt
         self.createdAt = createdAt
     }
 
     var isPinned: Bool { pinnedAt != nil }
+
+    var symbol: String {
+        iconSymbol ?? QuicklinkDestination.detect(link)?.defaultSymbol ?? Self.sfSymbol
+    }
 
     var entryID: String { Self.entryIDPrefix + id.uuidString.lowercased() }
 
@@ -60,7 +66,8 @@ struct Quicklink: Codable, Hashable, Identifiable, Sendable {
 
     // Hand-written, so an added field keeps old exports importable and imports stay minimal.
     private enum CodingKeys: String, CodingKey {
-        case id, name, link, openWithBundleID, iconSymbol, showsInRootSearch, pinnedAt, createdAt
+        case id, name, link, openWithBundleID, iconSymbol, isEnabled, showsInRootSearch, pinnedAt
+        case createdAt
     }
 
     init(from decoder: Decoder) throws {
@@ -70,25 +77,11 @@ struct Quicklink: Codable, Hashable, Identifiable, Sendable {
         link = try container.decode(String.self, forKey: .link)
         openWithBundleID = try container.decodeIfPresent(String.self, forKey: .openWithBundleID)
         iconSymbol = try container.decodeIfPresent(String.self, forKey: .iconSymbol)
+        isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
         showsInRootSearch =
             try container.decodeIfPresent(Bool.self, forKey: .showsInRootSearch) ?? true
         pinnedAt = try container.decodeIfPresent(Date.self, forKey: .pinnedAt)
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
-    }
-}
-
-/// What `{selection}` falls back to when the target app exposes no readable selection.
-enum QuicklinkSelectionFallback: String, CaseIterable, Identifiable, Sendable {
-    case ask
-    case clipboard
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .ask: return "Ask for it"
-        case .clipboard: return "Use the clipboard"
-        }
     }
 }
 
@@ -102,14 +95,15 @@ enum QuicklinkError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .emptyName: return "Enter a name for the quicklink."
-        case .emptyLink: return "Enter a link to open."
-        case .duplicateName: return "A quicklink with this name already exists."
+        case .emptyName: return String(localized: "Enter a name for the quicklink.")
+        case .emptyLink: return String(localized: "Enter a link to open.")
+        case .duplicateName: return String(localized: "A quicklink with this name already exists.")
         case .unresolvableLink:
-            return "This doesn't look like a URL, file path, or deeplink."
-        case .invalidCharacter: return "Names and links cannot contain null characters."
+            return String(localized: "This doesn't look like a URL, file path, or deeplink.")
+        case .invalidCharacter: return String(localized: "Names and links cannot contain null characters.")
         case .storageUnavailable:
-            return "The quicklinks database could not be opened, so changes can't be saved."
+            return String(
+                localized: "The quicklinks database could not be opened, so changes can't be saved.")
         }
     }
 }

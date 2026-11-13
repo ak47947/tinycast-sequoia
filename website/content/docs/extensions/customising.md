@@ -1,35 +1,69 @@
 ---
 title: Configuring an extension
-description: Preferences, launcher icons, and making a third-party extension look like it belongs.
+description: Preferences, launcher icons, aliases and background refresh for an extension.
 ---
 
-**Settings → Extensions → Library → Configure** on any installed extension.
+Open **Settings → Extensions**, find the extension in the **Installed** list, and click its row to
+show its settings. In the launcher, <kbd>⌘</kbd><kbd>K</kbd> → **Configure Extension** on any of its
+commands opens the same settings.
 
 ## Preferences
 
-Whatever the extension declares, rendered as a native control: checkbox, dropdown, text field,
-password field, file picker, directory picker or app picker.
+Any settings the extension defines appear as native controls: checkbox, dropdown, text field,
+password field, file picker, folder picker or app picker.
 
-These are stored per extension in Tinycast's own folder and removed when you uninstall it.
+They're saved separately for each extension in Tinycast's own folder and removed when you uninstall
+the extension.
+
+Preferences the extension needs say **Required**. If one is empty when you run a command,
+Tinycast names the missing preferences and offers **Configure Extension**, which opens these
+settings.
 
 ## Launcher icon
 
-Replace an extension's shipped artwork with an **SF Symbol on a tinted tile** — 18 tints available,
-or **Use Original** to clear it.
+Click **Change…** to replace an extension's own artwork with an **SF Symbol on a colored tile**, in
+one of 18 colors, or choose **Use Original Icon** to switch back.
 
-The choice is stored per extension and applies to **every command** it provides.
+The icon applies to **every command** in the extension.
 
-The symbol picker opens on about 85 curated suggestions, but **search reaches the whole catalog** —
-roughly 6,500 symbols — regardless of which category is selected. It uses Apple's own extra search
-terms, so "coffee" finds `cup.and.saucer`.
+The symbol picker starts with about 85 suggestions, but **search covers the full catalog** of about
+6,500 symbols. It also understands Apple's search keywords, so "coffee" finds `cup.and.saucer`.
 
-Apple's reserved marks (iCloud, iPhone, AirPlay and around 600 others) are never offered, because
-using them outside Apple's own context is not permitted.
+Symbols that Apple reserves for its own products, like iCloud, iPhone and AirPlay, aren't offered.
 
-Icon choices **do** ride along in [settings backups](/docs/reference/backup).
+Icon choices aren't included in [backups](/docs/reference/backup).
+
+## Command alias
+
+Each command has an alias field next to its shortcut recorder. If you enter `si`, that command comes
+first when you search for `si`, the same as an [app alias](/docs/launcher/aliases).
+
+The field is dimmed when the command is hidden from launcher search.
+
+## Background refresh
+
+A `no-view` command that defines an `interval`, like `1m` or `12h`, can run in the background on that
+schedule. Any subtitle it sets appears next to its name in the launcher. For example, Coffee's
+**Caffeinate Status** updates every minute.
+
+Background refresh is **off** for each command until you run the command yourself once, or turn it on
+in the command's settings. The settings also show when it last refreshed and any error.
+
+In the launcher, a small dot on the row means refresh is on, and a warning appears if the last run
+failed. <kbd>⌘</kbd><kbd>K</kbd> offers **Enable Background Refresh** or
+**Disable Background Refresh**, and **Refresh Now**.
+
+To keep background refresh light:
+
+- The shortest interval is one minute. After a failure, the wait gets longer each time, up to a day.
+- A background run never interrupts a command you're using.
+- A background run never shows toasts, dialogs or windows.
 
 ## Uninstalling
 
-Removes the extension and everything attached to it: local storage, cache, preferences, its support
-folder, the icon override, command shortcuts, favorites, hidden-item state, aliases and learned
+Click the trash button on the extension's row in **Settings → Extensions** to uninstall it. This
+removes the extension and everything connected to it: storage, cache, preferences, sign-ins, its
+support folder, the icon choice, command shortcuts, favorites, hidden items, aliases and learned
 ranking.
+
+<kbd>⌘</kbd><kbd>K</kbd> → **Uninstall Extension** in the launcher does the same.

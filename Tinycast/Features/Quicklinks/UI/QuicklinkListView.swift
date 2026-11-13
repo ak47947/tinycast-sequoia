@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// The Search Quicklinks screen: the whole library, pinned entries first.
 struct QuicklinkList: View {
+    @Environment(\.metrics) private var metrics
     let results: [Quicklink]
     let selectedID: Quicklink.ID?
     /// Changes only when the list should scroll, so mouse selection never yanks the position.
@@ -32,7 +32,7 @@ struct QuicklinkList: View {
         var rows: [Row] = []
         var currentTitle: String?
         for quicklink in results {
-            let title = quicklink.isPinned ? "Pinned" : "Quicklinks"
+            let title = quicklink.isPinned ? String(localized: "Pinned") : String(localized: "Quicklinks")
             if title != currentTitle {
                 rows.append(.header(title))
                 currentTitle = title
@@ -68,9 +68,9 @@ struct QuicklinkList: View {
                         }
                     }
                 }
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.top, Theme.Spacing.xs)
-                .padding(.bottom, Theme.Spacing.md)
+                .padding(.horizontal, metrics.spacing.md)
+                .padding(.top, metrics.spacing.xs)
+                .padding(.bottom, metrics.spacing.md)
                 .hideNativeScrollers()
                 .scrollOriginAnchor()
             }
@@ -83,6 +83,8 @@ struct QuicklinkList: View {
 }
 
 private struct QuicklinkRow: View {
+
+    @Environment(\.metrics) private var metrics
     let quicklink: Quicklink
     let selected: Bool
     @Environment(HotKeyManager.self) private var hotKeys
@@ -96,45 +98,142 @@ private struct QuicklinkRow: View {
     }
 
     var body: some View {
-        HStack(spacing: Theme.Spacing.lg) {
-            Image(nsImage: IconCache.symbolIcon(named: symbol))
+        IconCache.observeStyle()
+        return HStack(spacing: metrics.spacing.lg) {
+            Image(nsImage: IconCache.symbolIcon(named: quicklink.symbol))
                 .resizable()
-                .frame(width: Theme.Size.rowIcon, height: Theme.Size.rowIcon)
-            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                .frame(width: metrics.size.resultRowIcon, height: metrics.size.resultRowIcon)
+            VStack(alignment: .leading, spacing: metrics.spacing.xxs) {
                 Text(quicklink.name)
-                    .font(Theme.Typography.rowTitle)
+                    .font(metrics.typography.rowTitle)
                     .lineLimit(1)
                 Text(quicklink.link)
-                    .font(Theme.Typography.rowTrailing)
+                    .font(metrics.typography.rowTrailing)
                     .foregroundStyle(Theme.Colors.textTertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            Spacer(minLength: Theme.Spacing.lg)
+            Spacer(minLength: metrics.spacing.lg)
             if !quicklink.showsInRootSearch {
                 Image(systemName: "eye.slash")
                     .font(.system(size: 10))
                     .foregroundStyle(Theme.Colors.textTertiary)
             }
             if let keycaps = hotKeys.binding(for: .quicklink(id: quicklink.id))?.keycaps {
-                HStack(spacing: Theme.Spacing.xxs) {
+                HStack(spacing: metrics.spacing.xxs) {
                     ForEach(Array(keycaps.enumerated()), id: \.offset) { _, cap in
                         KeyCapChip(text: cap, style: .outline)
                     }
                 }
             }
         }
-        .padding(.horizontal, Theme.Spacing.md)
-        .padding(.vertical, Theme.Spacing.sm)
+        .padding(.horizontal, metrics.spacing.md)
+        .padding(.vertical, metrics.spacing.sm)
         .background(
-            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+            RoundedRectangle(cornerRadius: metrics.radius.row, style: .continuous)
                 .fill(fill)
         )
         .armedHover($hovered)
     }
+}
 
-    private var symbol: String {
-        quicklink.iconSymbol ?? QuicklinkDestination.detect(quicklink.link)?.defaultSymbol
-            ?? Quicklink.sfSymbol
+struct QuicklinkPreview: View {
+    @Environment(\.metrics) private var metrics
+    let quicklink: Quicklink?
+
+    var body: some View {
+        if let quicklink {
+            VStack(alignment: .leading, spacing: 0) {
+                Spacer(minLength: 0)
+                SymbolImage(name: quicklink.symbol, size: Self.glyphSize)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, metrics.spacing.xl)
+                Spacer(minLength: 0)
+                QuicklinkInfoSection(quicklink: quicklink)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 12)
+        } else {
+            Color.clear
+        }
+    }
+
+    /// Large enough to read as artwork, not as an oversized row icon.
+    private static let glyphSize: CGFloat = 64
+}
+
+/// The "Information" block; everything in it is already in memory, so nothing is gathered off-main.
+private struct QuicklinkInfoSection: View {
+    @Environment(\.metrics) private var metrics
+    let quicklink: Quicklink
+    @Environment(HotKeyManager.self) private var hotKeys
+    @Environment(AppIndex.self) private var appIndex
+
+    private struct InfoRow: Identifiable {
+        let label: String
+        let value: Text
+        var id: String { label }
+
+        init(label: String, value: String) {
+            self.label = label
+            self.value = Text(value)
+        }
+
+        init(label: String, keycaps: [String]) {
+            self.label = label
+            value = KeyCapChip.inlineText(keycaps)
+        }
+    }
+
+    /// Relative day plus exact time; shared, `DateFormatter` being expensive to build.
+    @MainActor private static let createdFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        formatter.doesRelativeDateFormatting = true
+        return formatter
+    }()
+
+    private var rows: [InfoRow] {
+        var rows = [
+            InfoRow(label: String(localized: "Name"), value: quicklink.name),
+            InfoRow(label: String(localized: "Link"), value: quicklink.link)
+        ]
+        if let bundleID = quicklink.openWithBundleID {
+            rows.append(
+                InfoRow(
+                    label: String(localized: "Open With"),
+                    value: AppPresentation.resolve(bundleID: bundleID, in: appIndex).name))
+        }
+        if let keycaps = hotKeys.binding(for: .quicklink(id: quicklink.id))?.keycaps {
+            rows.append(InfoRow(label: String(localized: "Shortcut"), keycaps: keycaps))
+        }
+        rows.append(
+            InfoRow(
+                label: String(localized: "Created"),
+                value: Self.createdFormatter.string(from: quicklink.createdAt)))
+        return rows
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: metrics.spacing.sm) {
+            Text("Information")
+                .font(metrics.typography.sectionHeader)
+                .foregroundStyle(.secondary)
+            VStack(spacing: 0) {
+                let rows = self.rows
+                ForEach(rows) { row in
+                    if row.id != rows.first?.id { Divider() }
+                    HStack(spacing: metrics.spacing.sm) {
+                        Text(row.label).foregroundStyle(.secondary)
+                        Spacer(minLength: metrics.spacing.lg)
+                        row.value.lineLimit(1).truncationMode(.middle)
+                    }
+                    .font(metrics.typography.keyCap)
+                    .padding(.vertical, metrics.spacing.xs)
+                }
+            }
+        }
+        .padding(.vertical, metrics.spacing.md)
     }
 }

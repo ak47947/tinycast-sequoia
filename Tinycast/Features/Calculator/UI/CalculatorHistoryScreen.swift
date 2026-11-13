@@ -1,6 +1,5 @@
 import SwiftUI
 
-/// Past calculations, led by the live answer for whatever is typed into the search field.
 struct CalculatorHistoryScreen: PaletteScreen {
     let history: CalculatorHistoryStore
     let currencyRates: CurrencyRateStore
@@ -21,8 +20,10 @@ struct CalculatorHistoryScreen: PaletteScreen {
         }
     }
 
-    private var calc: CalcResult? { CalcMemo.evaluate(vm.query, rates: currencyRates.rates) }
-    private var entries: [CalcHistoryEntry] { history.search(vm.query) }
+    private var format: CalcNumberFormat { core.calcNumberFormat }
+    private var calc: CalcResult? { CalcMemo.evaluate(vm.query, rates: currencyRates.rates, format: format) }
+    /// History is stored canonical, so a localized query is searched in the same spelling.
+    private var entries: [CalcHistoryEntry] { history.search(format.canonical(vm.query) ?? vm.query) }
 
     var rows: [Row] {
         let entries = entries.map(Row.entry)
@@ -30,7 +31,7 @@ struct CalculatorHistoryScreen: PaletteScreen {
         return [.calc(calc)] + entries
     }
 
-    var primaryActionTitle: String { "Copy Answer" }
+    var primaryActionTitle: String { String(localized: "Copy Answer") }
 
     private func row(at selection: Int) -> Row? {
         let rows = rows
@@ -66,28 +67,46 @@ struct CalculatorHistoryScreen: PaletteScreen {
 
     func activate(at selection: Int) {
         switch row(at: selection) {
-        // A fresh calculation: copy + record like the launcher card; error cards no-op.
         case .calc(let result): core.calculatorCoordinator.copyCalculatorResult(result)
         case .entry(let entry): core.calculatorCoordinator.copyHistoryEntry(entry)
         case nil: break
         }
     }
 
-    /// ⌘↵: the inline card has no expression to copy, so only stored entries respond.
+    /// ⌘↵: the inline card's answer becomes the query; a stored entry copies its expression.
     func secondary(at selection: Int) -> Bool {
+        if case .calc(let result) = row(at: selection) {
+            return core.calculatorCoordinator.putAnswerInSearchBar(result)
+        }
         guard let entry = entry(at: selection) else { return false }
         core.calculatorCoordinator.copyHistoryExpression(entry)
         return true
     }
 
+    func perform(_ shortcut: PaletteShortcut, at selection: Int) -> Bool {
+        switch shortcut {
+        case .commandDelete, .delete:
+            delete(at: selection)
+            return true
+        case .deleteAll:
+            deleteAll()
+            return true
+        case .copyCalculation:
+            guard case .calc(let result) = row(at: selection), result.isActionable else { return false }
+            core.calculatorCoordinator.copyCalculationWithExpression(result)
+            return true
+        default: return false
+        }
+    }
+
     /// ⌘⌫ / ⌃X — the screen owns the chord, but the inline card can't be deleted.
-    func delete(at selection: Int) {
+    private func delete(at selection: Int) {
         guard let entry = entry(at: selection) else { return }
         history.remove(entry)
     }
 
     /// ⌃⇧X — mirrors the Actions row, confirmation included; the live inline card isn't history.
-    func deleteAll() {
+    private func deleteAll() {
         Task { await core.calculatorCoordinator.deleteAllHistory() }
     }
 
@@ -101,7 +120,8 @@ struct CalculatorHistoryScreen: PaletteScreen {
         if rows.isEmpty {
             EmptyResults(
                 text: vm.query.trimmingCharacters(in: .whitespaces).isEmpty
-                    ? "No calculations yet" : "No matching calculations")
+                    ? String(localized: "No calculations yet")
+                    : String(localized: "No matching calculations"))
         } else {
             CalculatorHistoryList(
                 results: entries,
@@ -131,7 +151,6 @@ struct CalculatorHistoryScreen: PaletteScreen {
     }
 }
 
-/// Actions menu content for a calculator-history entry, shown bottom-right like the other modes.
 @MainActor
 enum CalcHistoryActionsMenu {
     static func content(
@@ -140,23 +159,28 @@ enum CalcHistoryActionsMenu {
         -> PopoverMenuContent
     {
         PopoverMenuContent(
-            header: entry.expression,
+            header: core.calcNumberFormat.localizedExpression(entry.expression),
             items: [
-                PopoverMenuItem(title: "Copy Answer", systemImage: "doc.on.doc", shortcut: "↵") {
+                PopoverMenuItem(
+                    title: String(localized: "Copy Answer"), systemImage: "doc.on.doc", shortcut: "↵"
+                ) {
                     core.calculatorCoordinator.copyHistoryEntry(entry)
                 },
                 PopoverMenuItem(
-                    title: "Copy Expression", systemImage: "doc.on.doc.fill", shortcut: "⌘↵"
+                    title: String(localized: "Copy Expression"), systemImage: "doc.on.doc.fill",
+                    shortcut: "⌘↵"
                 ) {
                     core.calculatorCoordinator.copyHistoryExpression(entry)
                 },
                 PopoverMenuItem(
-                    title: "Delete Entry", systemImage: "trash", shortcut: "⌃X", isDestructive: true
+                    title: String(localized: "Delete Entry"), systemImage: "trash", startsSection: true,
+                    shortcut: "⌃X",
+                    isDestructive: true
                 ) {
                     calcHistory.remove(entry)
                 },
                 PopoverMenuItem(
-                    title: "Delete All Entries", systemImage: "trash", shortcut: "⌃⇧X",
+                    title: String(localized: "Delete All Entries"), systemImage: "trash", shortcut: "⌃⇧X",
                     isDestructive: true
                 ) {
                     Task { await core.calculatorCoordinator.deleteAllHistory() }

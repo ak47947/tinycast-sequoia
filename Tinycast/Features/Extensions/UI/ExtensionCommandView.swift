@@ -1,6 +1,5 @@
 import SwiftUI
 
-/// The palette's extension screen: whichever root component the running command rendered.
 struct ExtensionCommandView: View {
     let screen: ExtensionScreen
     let state: ExtensionSessionState
@@ -8,7 +7,7 @@ struct ExtensionCommandView: View {
     let assetsPath: String?
     let scroll: ScrollIntent
     let onSelect: (Int) -> Void
-    let onActivate: () -> Void
+    let onActivate: (Int) -> Void
     let onActions: (Int) -> Void
     let onFieldChange: (RenderNode, Any) -> Void
 
@@ -21,11 +20,11 @@ struct ExtensionCommandView: View {
     private var content: some View {
         switch state {
         case .launching where screen.root == nil:
-            EmptyResults(text: "Starting…")
-        case .failed(let message):
+            EmptyResults(text: String(localized: "Starting…"))
+        case .failed(let message), .needsPreferences(let message):
             ExtensionFailureView(message: message)
         case .finished:
-            EmptyResults(text: "Done")
+            EmptyResults(text: String(localized: "Done"))
         default:
             switch screen.kind {
             case .list, .grid:
@@ -40,28 +39,29 @@ struct ExtensionCommandView: View {
                     isLoading: screen.isLoading, assetsPath: assetsPath)
             case .form:
                 ExtensionFormView(
-                    screen: screen, assetsPath: assetsPath, onChange: onFieldChange,
-                    onSubmit: onActivate)
+                    screen: screen, assetsPath: assetsPath, selection: selection, scroll: scroll,
+                    onSelect: onSelect, onChange: onFieldChange,
+                    onSubmit: { onActivate(selection) })
             case .unsupported(let type):
                 if type.isEmpty {
-                    // A commit arrived but the command rendered nothing — it returned null, usually
-                    // because it has no data to show. Saying "Starting…" here would claim it is still
-                    // launching, which is how a permanently-null command looked like a hang.
-                    EmptyResults(text: "Nothing to show")
+                    // A commit rendered null; "Starting…" here would look like a hang.
+                    EmptyResults(text: String(localized: "Nothing to show"))
                 } else {
                     ExtensionFailureView(
-                        message:
-                            "This command renders \(type), which Tinycast doesn't support yet. See docs/extensions.md."
-                    )
+                        message: String(
+                            localized: """
+                                This command renders \(type), which Tinycast doesn't support yet. See \
+                                docs/extensions.md.
+                                """))
                 }
             }
         }
     }
 }
 
-/// A command that threw, or one Tinycast can't render. The stack trace is kept — it's the only debugging
-/// signal an extension author gets.
+/// The stack trace is kept: it is the only debugging signal an author gets.
 struct ExtensionFailureView: View {
+    @Environment(\.metrics) private var metrics
     let message: String
 
     private var headline: String {
@@ -74,12 +74,12 @@ struct ExtensionFailureView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                HStack(spacing: Theme.Spacing.sm) {
+            VStack(alignment: .leading, spacing: metrics.spacing.md) {
+                HStack(spacing: metrics.spacing.sm) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                     Text(headline)
-                        .font(Theme.Typography.rowTitle)
+                        .font(metrics.typography.rowTitle)
                         .textSelection(.enabled)
                 }
                 if let detail {
@@ -90,106 +90,167 @@ struct ExtensionFailureView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(Theme.Spacing.lg)
+            .padding(metrics.spacing.lg)
             .hideNativeScrollers()
         }
         .thinScrollbar()
     }
 }
 
-/// Toasts a running view command raised, stacked above the footer. `showHUD` is a separate floating
-/// window (`HUDWindowController`) because a no-view command closes the palette before it finishes.
-struct ExtensionFeedbackOverlay: View {
-    let toasts: [ExtensionToast]
-    let onToastAction: (String) -> Void
+struct ExtensionToastPill: View {
+    private static let glowOpacity = 0.14
+    private static let glowRadius: CGFloat = 150
+    private static let rimOpacity = 0.25
 
-    var body: some View {
-        VStack(spacing: Theme.Spacing.xs) {
-            ForEach(toasts) { toast in
-                ToastRow(toast: toast, onAction: onToastAction)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
+    @Environment(\.metrics) private var metrics
+    let toast: ExtensionToast
+    let onAction: (String) -> Void
+    let onDismiss: () -> Void
+    @State private var hovered = false
+    /// A fresh stamp re-arms the reset, so a second copy holds "Copied".
+    @State private var copiedAt: Date?
+
+    private var tint: Color {
+        switch toast.style {
+        case .success: Theme.Colors.success
+        case .failure: Theme.Colors.destructive
+        case .animated: Theme.Colors.progress
         }
-        .padding(.bottom, Theme.Size.bottomBarHeight)
-        .padding(.horizontal, Theme.Spacing.md)
-        .animation(.easeOut(duration: 0.16), value: toasts.map(\.id))
     }
 
-    private struct ToastRow: View {
-        let toast: ExtensionToast
-        let onAction: (String) -> Void
-
-        private var icon: (name: String, tint: Color) {
-            switch toast.style {
-            case .success: return ("checkmark.circle.fill", .green)
-            case .failure: return ("xmark.circle.fill", .red)
-            case .animated: return ("arrow.trianglehead.2.clockwise", Theme.Colors.textSecondary)
-            }
-        }
-
-        var body: some View {
-            HStack(spacing: Theme.Spacing.sm) {
-                Image(systemName: icon.name)
-                    .foregroundStyle(icon.tint)
-                    .symbolEffect(.rotate, isActive: toast.style == .animated)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(toast.title).font(Theme.Typography.bar).lineLimit(1)
-                    if let message = toast.message, !message.isEmpty {
-                        Text(message)
-                            .font(Theme.Typography.rowTrailing)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+    var body: some View {
+        HStack(spacing: 0) {
+            mark.frame(width: metrics.size.menuButton, height: metrics.size.menuButton)
+            HStack(spacing: metrics.spacing.md) {
+                Text(toast.title).foregroundStyle(Theme.Colors.textPrimary).layoutPriority(1)
+                if let message = toast.message, !message.isEmpty {
+                    Text(message).foregroundStyle(Theme.Colors.textSecondary)
+                }
+                if toast.style == .failure {
+                    divider
+                    button {
+                        Paster.copyPlainText(
+                            [toast.title, toast.message].compactMap(\.self).joined(separator: "\n"))
+                        copiedAt = Date()
+                    } label: {
+                        // The wider word holds the width, so the pill never twitches on copy.
+                        ZStack {
+                            Text("Copied").hidden()
+                            Text(copiedAt == nil ? "Copy" : "Copied")
+                        }
+                    }
+                } else if let action = toast.primaryAction {
+                    divider
+                    button {
+                        onAction(action.token)
+                    } label: {
+                        Text(action.title)
                     }
                 }
-                Spacer(minLength: Theme.Spacing.sm)
-                if let action = toast.primaryAction {
-                    Button(action.title) { onAction(action.token) }
-                        .buttonStyle(.plain)
-                        .font(Theme.Typography.bar)
-                        .foregroundStyle(.tint)
-                }
             }
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Spacing.sm)
-            .frosted(in: RoundedRectangle(cornerRadius: Theme.Radius.menu, style: .continuous))
+            .font(metrics.typography.bar)
+            .lineLimit(1)
+            .padding(.trailing, metrics.spacing.xl)
+        }
+        .frame(height: metrics.size.menuButton)
+        .background { glow }
+        .overlay {
+            Capsule().strokeBorder(
+                LinearGradient(
+                    colors: [tint.opacity(Self.rimOpacity), tint.opacity(0.06), .clear],
+                    startPoint: .leading, endPoint: .trailing),
+                lineWidth: Theme.Size.hairline)
+        }
+        .frosted(in: Capsule())
+        .contentShape(Capsule())
+        .onTapGesture(perform: onDismiss)
+        .onHover { isHovered in
+            withAnimation(.easeOut(duration: Theme.Duration.hover)) { hovered = isHovered }
+        }
+        .accessibilityAction(named: "Dismiss", onDismiss)
+        .task(id: copiedAt) {
+            guard copiedAt != nil else { return }
+            try? await Task.sleep(for: .seconds(Theme.Duration.copyFeedback))
+            copiedAt = nil
+        }
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Theme.Colors.border)
+            .frame(width: Theme.Size.hairline, height: metrics.size.menuIcon * 0.7)
+    }
+
+    private func button(
+        action: @escaping () -> Void, @ViewBuilder label: () -> some View
+    ) -> some View {
+        Button(action: action, label: label)
+            .fixedSize()
+            .buttonStyle(.plain)
+            .fontWeight(.semibold)
+            .foregroundStyle(Theme.Colors.textPrimary)
+    }
+
+    private var glow: some View {
+        GeometryReader { proxy in
+            Capsule().fill(
+                RadialGradient(
+                    colors: [tint.opacity(Self.glowOpacity), tint.opacity(0.03), .clear],
+                    center: UnitPoint(x: metrics.size.menuButton / 2 / proxy.size.width, y: 0.5),
+                    startRadius: 0, endRadius: Self.glowRadius))
+        }
+    }
+
+    private var mark: some View {
+        Group {
+            if hovered {
+                Image(systemName: "xmark")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Theme.Colors.textSecondary)
+            } else {
+                symbol.foregroundStyle(tint)
+            }
+        }
+        .font(metrics.typography.menuIcon)
+        .transition(.opacity)
+    }
+
+    @ViewBuilder
+    private var symbol: some View {
+        switch toast.style {
+        case .success: Image(systemName: "checkmark")
+        case .failure: Image(systemName: "exclamationmark")
+        case .animated:
+            Image(systemName: "progress.indicator")
+                .symbolEffect(.variableColor.iterative.dimInactiveLayers.nonReversing)
         }
     }
 }
 
-/// Actions menu content for the running command's current selection.
 @MainActor
 enum ExtensionActionsMenu {
-    static func content(
-        screen: ExtensionScreen, selection: Int, assetsPath: String?, core: AppCore
-    ) -> PopoverMenuContent? {
-        let actions = ExtensionScreen.actions(in: screen.actionPanel(forItemAt: selection))
-        guard !actions.isEmpty else { return nil }
-        let header =
-            screen.items.indices.contains(selection)
-            ? screen.items[selection].string("title") : screen.navigationTitle
-        return PopoverMenuContent(
-            header: header,
-            items: actions.map { action in
-                PopoverMenuItem(
-                    title: action.title,
-                    systemImage: symbolName(for: action),
-                    shortcut: action.shortcutCaps?.joined()
-                ) {
-                    guard let handler = action.handler else { return }
-                    core.extensions.dispatch(handler: handler)
-                }
-            })
+    /// What the panel belongs to: the selected row, or the screen when the selection has outrun it.
+    static func header(screen: ExtensionScreen, selection: Int) -> String? {
+        // A form's rows are its fields, and the panel acts on the form rather than on one field.
+        guard screen.kind != .form, screen.items.indices.contains(selection) else {
+            return screen.navigationTitle
+        }
+        return screen.items[selection].node.string("title")
     }
 
-    /// The popover menu draws SF Symbols, so an extension icon resolves to one; a file-based icon falls
-    /// back to a neutral glyph rather than an empty slot.
-    private static func symbolName(for action: ExtensionAction) -> String {
-        // Read rather than injected: a menu is rebuilt each time it opens, so it never goes stale.
-        guard
-            let resolved = ExtensionImage.resolve(
-                action.iconValue, assetsPath: nil, isDark: NSApp.effectiveAppearance.isDark),
-            case .symbol(let name) = resolved.source
-        else { return action.isDestructive ? "trash" : "bolt" }
-        return name
+    /// Rows carry a resolved `ExtensionImage`; resolving per ↑/↓ would probe symbols on main.
+    static func rows(_ actions: [ExtensionAction], assetsPath: String?) -> [ExtensionActionItem] {
+        actions.map { action in
+            ExtensionActionItem(
+                title: action.title,
+                icon: ExtensionImage.actionIcon(
+                    action.iconValue, assetsPath: assetsPath,
+                    // Read rather than injected: a panel is rebuilt each time it opens.
+                    isDark: NSApp.effectiveAppearance.isDark,
+                    isDestructive: action.isDestructive),
+                shortcutCaps: action.shortcutCaps ?? [],
+                isDestructive: action.isDestructive,
+                startsSection: action.startsSection)
+        }
     }
 }

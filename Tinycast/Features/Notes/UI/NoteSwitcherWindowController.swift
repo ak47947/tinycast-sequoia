@@ -31,7 +31,7 @@ final class NoteSwitcherWindowController: NSObject, NSWindowDelegate {
 
     // MARK: - NSWindowDelegate
 
-    /// Closes like a popover; focus stays where the click landed rather than snapping to the editor.
+    /// Closes like a popover; focus stays where the click landed.
     func windowDidResignKey(_ notification: Notification) {
         guard coordinator.isSwitcherPresented else { return }
         coordinator.closeSwitcher(focusEditor: false)
@@ -43,6 +43,7 @@ final class NoteSwitcherWindowController: NSObject, NSWindowDelegate {
         if let panel { return panel }
         let root = NoteSwitcherView { [weak self] in self?.resize(toContentHeight: $0) }
             .environment(coordinator)
+            .motionScope()
         let hosting = NSHostingView(rootView: root)
         hosting.sizingOptions = []
         let panel = NotesPanel(

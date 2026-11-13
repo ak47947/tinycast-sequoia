@@ -1,5 +1,5 @@
-// Standalone test for the quicklink model, destination detection, store and archive.
 import Foundation
+import SwiftUI
 
 @main
 @MainActor
@@ -16,15 +16,19 @@ struct QuicklinkTests {
         encodingChoice()
         placeholderDetection()
         displayOrder()
+        editorDrafts()
+        editorInput()
         storeCRUD()
         storeValidation()
         pinning()
         persistence()
         readsADatabaseWrittenElsewhere()
         corruptDatabaseIsPreserved()
+        replaceIsAllOrNothing()
         archiveRoundTrip()
         archiveMerge()
         archiveAcceptsAHandWrittenFile()
+        raycastImport()
 
         print("\(passes)/\(passes + failures) passed")
         if failures > 0 { exit(1) }
@@ -137,6 +141,85 @@ struct QuicklinkTests {
             "pins lead in pin order, then the rest sort case-insensitively by name")
     }
 
+    static func editorDrafts() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let fresh = QuicklinkEditorSession(quicklink: nil)
+        expect(!fresh.canSave, "an empty quicklink cannot be saved")
+        expect(
+            fresh.showsInRootSearch && !fresh.isPinned && fresh.iconSymbol == nil
+                && fresh.openWithBundleID == nil,
+            "a new editor keeps the existing quicklink defaults")
+        fresh.name = " GitHub "
+        fresh.link = " https://github.com "
+        expect(fresh.canSave, "a named destination can be saved")
+        expect(fresh.draft(now: now).id == fresh.id, "a new draft keeps one identity until saved")
+        withStore { store in
+            let saved = try? store.add(fresh.draft(now: now))
+            expect(
+                saved?.name == "GitHub" && saved?.link == "https://github.com",
+                "the editor leaves normalisation to the existing store")
+        }
+        fresh.name = " \n"
+        expect(!fresh.canSave, "a whitespace-only name cannot be saved")
+        fresh.name = "GitHub"
+        fresh.link = " \n"
+        expect(!fresh.canSave, "a whitespace-only destination cannot be saved")
+
+        let original = Quicklink(
+            name: "Original", link: "https://example.com", openWithBundleID: "test.browser",
+            iconSymbol: "star", isEnabled: false, showsInRootSearch: false,
+            pinnedAt: now, createdAt: now.addingTimeInterval(-60))
+        let editor = QuicklinkEditorSession(quicklink: original)
+        expect(editor.draft(now: now) == original, "opening an editor does not change the quicklink")
+        editor.name = "Edited"
+        editor.link = "https://example.com/{argument}"
+        editor.iconSymbol = "globe"
+        editor.openWithBundleID = nil
+        editor.showsInRootSearch = true
+        let edited = editor.draft(now: now.addingTimeInterval(60))
+        expect(
+            edited.id == original.id && edited.entryID == original.entryID && !edited.isEnabled
+                && edited.createdAt == original.createdAt && edited.pinnedAt == original.pinnedAt,
+            "editing preserves identity, enabled state, creation time and pin order")
+        expect(
+            edited.name == "Edited" && edited.link == editor.link && edited.iconSymbol == "globe"
+                && edited.openWithBundleID == nil && edited.showsInRootSearch,
+            "each editable option reaches the draft")
+        editor.isPinned = false
+        expect(editor.draft(now: now).pinnedAt == nil, "unpinning removes the saved pin stamp")
+        fresh.isPinned = true
+        expect(fresh.draft(now: now).pinnedAt == now, "a new pin uses the supplied clock")
+    }
+
+    static func editorInput() {
+        let editor = QuicklinkEditorSession(quicklink: nil)
+        editor.link = "https://example.com/query"
+        let start = editor.link.index(editor.link.endIndex, offsetBy: -5)
+        editor.selection = TextSelection(range: start..<editor.link.endIndex)
+        editor.focusedField = .name
+        editor.insert("{argument}")
+        expect(
+            editor.link == "https://example.com/{argument}" && editor.focusedField == .link,
+            "Insert replaces the selected text and returns focus to the destination")
+        editor.selection = nil
+        editor.insert("{clipboard}")
+        expect(editor.link.hasSuffix("{argument}{clipboard}"), "Insert without a selection appends")
+        editor.link = "avant 👋 après"
+        let cursor = editor.link.index(editor.link.startIndex, offsetBy: 7)
+        editor.selection = TextSelection(range: cursor..<cursor)
+        editor.insert("\n")
+        expect(editor.link == "avant 👋\n après", "Return inserts a line break at the Unicode caret")
+        editor.insert("{date}")
+        expect(editor.link == "avant 👋\n{date} après", "successive placeholders keep the Unicode caret")
+        for field in QuicklinkEditorSession.Field.allCases {
+            expect(editor.focusedField == field, "Tab reaches \(field)")
+            editor.advanceFocus(backwards: false)
+        }
+        expect(editor.focusedField == .link, "Tab wraps to the first field")
+        editor.advanceFocus(backwards: true)
+        expect(editor.focusedField == .pin, "Shift-Tab wraps to the last field")
+    }
+
     // MARK: - Store
 
     static func storeCRUD() {
@@ -163,12 +246,20 @@ struct QuicklinkTests {
                 store.quicklink(id: github.id)?.showsInRootSearch == false,
                 "hiding from root search is stored")
 
+            expect(github.isEnabled, "a new quicklink is enabled")
+            try? store.setEnabled(false, id: github.id)
+            expect(store.quicklink(id: github.id)?.isEnabled == false, "disabling is stored")
+            expect(
+                store.quicklink(id: github.id)?.link == "https://github.com/issues",
+                "disabling keeps every other field intact")
+
             guard let copy = try? store.duplicate(id: github.id) else {
                 return fail("duplicating a quicklink succeeds")
             }
             expect(copy.id != github.id, "a duplicate is a new identity")
             expect(copy.name == "GitHub Issues Copy", "a duplicate gets a distinct name")
             expect(copy.link == "https://github.com/issues", "a duplicate keeps the destination")
+            expect(!copy.isEnabled, "a duplicate inherits the enabled flag")
 
             try? store.remove(id: copy.id)
             expect(store.quicklinks.map(\.id) == [github.id], "removing drops only that row")
@@ -246,6 +337,7 @@ struct QuicklinkTests {
             draft.openWithBundleID = "com.apple.finder"
             stored = try? store.add(draft).id
             try? store.togglePinned(id: stored!)
+            try? store.setEnabled(false, id: stored!)
         }
 
         let reopened = QuicklinkStore(directory: dir)
@@ -259,10 +351,10 @@ struct QuicklinkTests {
         expect(restored.iconSymbol == "folder", "the icon survives")
         expect(restored.openWithBundleID == "com.apple.finder", "the open-with app survives")
         expect(restored.isPinned, "the pin stamp survives")
+        expect(!restored.isEnabled, "the enabled flag survives")
     }
 
-    /// Proves the column order the store binds matches the column order it reads, independently of
-    /// its own writer.
+    /// The bound column order must match the read order, and an older table must gain `is_enabled`.
     static func readsADatabaseWrittenElsewhere() {
         let dir = scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -290,10 +382,15 @@ struct QuicklinkTests {
         expect(row.openWithBundleID == nil, "a null open-with reads as none")
         expect(!row.showsInRootSearch, "the root-search flag lines up")
         expect(!row.isPinned, "a null pin stamp reads as unpinned")
+        expect(row.isEnabled, "a table written before is_enabled loads its rows as enabled")
+
+        // A second open must find the column already there rather than adding it twice.
+        let reopened = QuicklinkStore(directory: dir)
+        reopened.load()
+        expect(reopened.quicklinks.count == 1, "the migrated table reopens cleanly")
     }
 
-    /// The invariant that separates this store from `ClipboardStore`: quicklinks are authored data,
-    /// so an unreadable database is reported, never deleted and recreated.
+    /// Quicklinks are authored data, so an unreadable database is reported, never recreated.
     static func corruptDatabaseIsPreserved() {
         let dir = scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -312,15 +409,48 @@ struct QuicklinkTests {
             "a mutation refuses rather than pretending to save")
     }
 
+    static func replaceIsAllOrNothing() {
+        let dir = scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = QuicklinkStore(directory: dir)
+        _ = try? store.add(link("Kept"))
+        var published = 0
+        store.onChange = { _ in published += 1 }
+        sqlite(
+            dir.appendingPathComponent("quicklinks.sqlite3"),
+            """
+            CREATE TRIGGER reject AFTER INSERT ON quicklinks WHEN NEW.name = 'Rejected'
+            BEGIN SELECT RAISE(ABORT, 'rejected'); END;
+            """)
+
+        let failed = store.replace(with: [link("Imported"), link("Rejected")])
+        expect(failed == 0, "an import whose write fails adds nothing")
+        expect(names(store) == ["Kept"], "a failed import leaves the library in memory untouched")
+        expect(published == 0, "a failed import publishes nothing")
+        let reopened = QuicklinkStore(directory: dir)
+        reopened.load()
+        expect(names(reopened) == ["Kept"], "a failed import leaves the library on disk untouched")
+
+        let replaced = store.replace(with: [link("One"), link("Two"), link("one")])
+        expect(replaced == 2, "a clean import replaces the library, skipping a duplicate name")
+        expect(names(store) == ["One", "Two"], "the replaced library holds only the import")
+        expect(published == 1, "a whole import publishes once")
+
+        let appended = store.append([link("Three"), link("Two")])
+        expect(appended.map(\.name) == ["Three"], "an append skips a name already taken")
+        expect(names(store) == ["One", "Three", "Two"], "an append keeps the library and sorts it")
+        expect(published == 2, "a whole append publishes once")
+    }
+
     // MARK: - Archive
 
     static func archiveRoundTrip() {
-        // Whole seconds throughout: the archive is ISO 8601 so a reader can hand-edit it, which
-        // means sub-second precision is deliberately not part of the format.
+        // Whole seconds: the archive is ISO 8601 so a reader can hand-edit it.
         let stamp = Date(timeIntervalSince1970: 500)
         let pinned = Quicklink(
             name: "Pinned", link: "~/Downloads", openWithBundleID: "com.apple.finder",
-            iconSymbol: "folder", showsInRootSearch: false, pinnedAt: stamp, createdAt: stamp)
+            iconSymbol: "folder", isEnabled: false, showsInRootSearch: false, pinnedAt: stamp,
+            createdAt: stamp)
         let plain = Quicklink(name: "GitHub", link: "https://github.com", createdAt: stamp)
         let source = [plain, pinned]
 
@@ -335,7 +465,7 @@ struct QuicklinkTests {
         let incoming = [
             link("github", "https://elsewhere.com"),  // same name
             link("Repos", "https://github.com"),  // same destination
-            link("Jira", "https://jira.example.com"),  // new
+            link("Jira", "https://jira.example.com"),
             link("Jira Two", "https://jira.example.com")  // duplicate of the one above, in-batch
         ]
 
@@ -361,6 +491,7 @@ struct QuicklinkTests {
         guard let decoded = try? QuicklinkArchive.decode(handWritten), let first = decoded.first
         else { return fail("a hand-written archive decodes") }
         expect(first.name == "Staging", "the name is read")
+        expect(first.isEnabled, "an omitted enabled flag defaults to on")
         expect(first.showsInRootSearch, "an omitted root-search flag defaults to shown")
         expect(first.pinnedAt == nil, "an omitted pin stamp reads as unpinned")
 
@@ -371,6 +502,81 @@ struct QuicklinkTests {
         expect(
             throwsArchiveError(Data(#"{"version":1,"quicklinks":[]}"#.utf8)) == .empty,
             "an archive with no quicklinks is reported as empty rather than imported")
+    }
+
+    static func raycastImport() {
+        let bundleIDs = ["/Applications/Chrome.app": "com.google.Chrome"]
+        let stamped = Date(timeIntervalSince1970: 1_780_497_120)
+        let imported = RaycastQuicklinkImport.parse(
+            [
+                "schemaVersion": 1,
+                "openWithPlatforms": [
+                    ["id": "plat-1", "macos": "/Applications/Chrome.app"]
+                ],
+                "quicklinks": [
+                    [
+                        "name": " Search ",
+                        "link": " https://google.com/search?q={Query} ",
+                        "createdAt": "2026-06-03T14:32:00Z"
+                    ],
+                    [
+                        "name": "Dash",
+                        "link": "https://kapeli.com",
+                        "openWith": "/Applications/Chrome.app"
+                    ],
+                    [
+                        "name": "Via platform",
+                        "link": "https://via.example",
+                        "openWith": "plat-1"
+                    ],
+                    ["name": "Anna", "link": "https://annas-archive.org/search?q={query}"],
+                    [
+                        "name": "Named",
+                        "link": #"https://x.com?q={argument name="Keyword"}"#
+                    ],
+                    ["name": "  ", "link": "https://skip.example"],
+                    ["name": "No link"],
+                    ["name": "Missing Text"]
+                ]
+            ],
+            bundleIDForAppPath: { bundleIDs[$0] })
+
+        expect(
+            RaycastQuicklinkImport.parse(["quicklinks": []]).isEmpty,
+            "Raycast import ignores an empty container")
+        expect(
+            RaycastQuicklinkImport.parse(["foo": 1]).isEmpty,
+            "Raycast import ignores an unrecognized container")
+        expect(
+            imported.map(\.name) == ["Search", "Dash", "Via platform", "Anna", "Named"],
+            "Raycast import keeps valid entries and source order")
+        guard imported.count == 5 else { return }
+        expect(
+            imported[0].link == "https://google.com/search?q={argument}",
+            "Raycast import rewrites {Query} to {argument}")
+        expect(
+            imported[3].link == "https://annas-archive.org/search?q={argument}",
+            "Raycast import rewrites {query} the same way")
+        expect(
+            imported[4].link == #"https://x.com?q={argument name="Keyword"}"#,
+            "Raycast import leaves a real {argument} token alone")
+        expect(
+            imported[1].openWithBundleID == "com.google.Chrome"
+                && imported[2].openWithBundleID == "com.google.Chrome",
+            "Raycast import resolves an app path and a platform id through the same lookup")
+        expect(
+            imported[0].createdAt == stamped,
+            "Raycast import keeps the export's createdAt")
+
+        let bare = RaycastQuicklinkImport.parse([
+            ["name": "Bare", "link": "https://bare.example"]
+        ])
+        expect(bare.map(\.name) == ["Bare"], "a bare array still parses, matching snippets")
+        expect(
+            RaycastQuicklinkImport.rewrittenLink(
+                #"https://x.com?q={argument name="query"}"#)
+                == #"https://x.com?q={argument name="query"}"#,
+            "a parameter named query is not rewritten as the token")
     }
 
     // MARK: - Helpers

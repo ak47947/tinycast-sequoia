@@ -1,11 +1,21 @@
 // Single source of truth for links, install commands, and metadata used across
 // the site. Update these in one place rather than hunting through components.
 
+// The page title and meta description, shared by the layout and /llms.txt. Google truncates a
+// description near 160 characters, so `summary` is written to land under it rather than be cut.
+export const pageTitle =
+  "Tinycast: a native macOS launcher for everyday productivity";
+export const summary =
+  "A lightweight, open source macOS launcher with app search, clipboard history, snippets, window management, your own AI keys and Raycast extensions.";
+
 export const site = {
   name: "Tinycast",
-  tagline: "The essentials, without the bloat.",
   repo: "https://github.com/abue-ammar/tinycast",
-  url: "https://abue-ammar.github.io/tinycast",
+  intelTap: "https://github.com/abue-ammar/homebrew-tinycast",
+  url: "https://tinycast.dev",
+  // The R2 bucket behind cdn.tinycast.dev. Anything over Workers' 25 MiB
+  // per-asset cap lives here instead of `public/` — see website/README.md.
+  cdn: "https://cdn.tinycast.dev",
   // Shown only until the build-time release lookup resolves, and if it fails.
   fallbackVersion: "v0.9.7",
   platform: "macOS 26+",
@@ -14,57 +24,94 @@ export const site = {
   community: {
     discord: "https://discord.gg/v2Eeb4QQy3",
   },
+  support: "/support",
 } as const;
 
 // The hero, in as few words as possible — headline plus one punchy line.
 export const hero = {
-  eyebrow: "Native macOS launcher",
-  headline: "Everything on your Mac. One keystroke away.",
-  sub: "A tiny, native launcher. No Electron. No account. No telemetry. No bullshit.",
+  // Two lines, the break between the two sentences at every width. The first
+  // line opens on each of `swap` in turn, once, and settles on the first, so it
+  // ends as written; none is wider than "Everything", so the line never rewraps.
+  // The second line ends bare, because the hero draws a caret after it.
+  headline: {
+    swap: ["Everything", "Every app", "Every file", "Every clip", "Every note"],
+    rest: "on your Mac.",
+    second: "One keystroke away",
+  },
+  sub: "A native macOS launcher for everyday productivity. Lightweight and open source, with no account and no telemetry.",
+  // The mono line under the buttons. Each fact is stated in the docs.
+  facts: ["Under 100 MB of memory", "Zero dependencies", "Free & open source"],
 } as const;
 
 export const nav = [
-  { label: "Gallery", href: "/#gallery" },
   { label: "Features", href: "/#features" },
+  { label: "Privacy", href: "/#privacy" },
   { label: "Docs", href: "/docs" },
-  { label: "Install", href: "/#install" },
+  { label: "Changelog", href: "/changelog" },
 ] as const;
 
-// Homebrew install channels. Each is a separate app that runs side by side,
-// with its own settings, permissions and login item.
-export const channels = [
-  {
-    id: "stable",
-    label: "Stable",
-    command:
-      "brew trust --tap abue-ammar/tinycast && brew install --cask abue-ammar/tinycast/tinycast",
-    note: "Recommended",
-  },
-  {
-    id: "beta",
-    label: "Beta",
-    command:
-      "brew trust --tap abue-ammar/tinycast && brew install --cask abue-ammar/tinycast/tinycast@beta",
-    note: "Side-by-side",
-  },
-  {
-    id: "sequoia",
-    label: "Sequoia",
-    command:
-      "brew trust --tap abue-ammar/tinycast && brew install --cask abue-ammar/tinycast/tinycast-sequoia",
-    note: "macOS 15",
-  },
+// The hero's line. Every other channel lives in docs/install.md, which is
+// where both install CTAs point.
+export const brewInstallCommand = "brew install --cask tinycast";
+
+// The logo wall under the hero, in render order. The track starts at the first
+// entry with the left edge under the mask, so the two least-known names lead
+// and the ones worth reading land mid-viewport on load.
+export const companies = [
+  "voidzero",
+  "bytedance",
+  "apple",
+  "google",
+  "microsoft",
+  "openai",
+  "anthropic",
+  "stripe",
+  "cloudflare",
+  "github",
+  "samsung",
+  "alibaba",
+  "oracle",
+  "redhat",
 ] as const;
 
-// Only for a direct DMG download. Homebrew clears quarantine on every install
-// and update, so the Homebrew path needs no manual step at all.
-export const quarantineCommand =
-  'xattr -dr com.apple.quarantine "/Applications/Tinycast.app"';
+export type Company = (typeof companies)[number];
 
-// Headline numbers for the "why it's tiny" band. Kept honest, from the README.
-export const stats = [
-  { value: "<3", unit: "MB", label: "On disk" },
-  { value: "<100", unit: "MB", label: "Memory" },
-  { value: "0", unit: "", label: "Dependencies" },
-  { value: "0", unit: "", label: "Telemetry" },
-] as const;
+export type Badge = {
+  href: string;
+  alt: string;
+  src: string;
+  darkSrc?: string;
+  width: number;
+  height: number;
+  isInvertedInDark?: boolean;
+};
+
+// The images are copies in public/badges, never hotlinks, so the page still
+// makes no request to a third party.
+export const badges: Badge[] = [
+  {
+    href: "https://www.star-history.com/abue-ammar/tinycast",
+    alt: "GitHub Trending Repository of the Day",
+    src: "/badges/trending-light.svg",
+    darkSrc: "/badges/trending-dark.svg",
+    width: 270,
+    height: 64,
+  },
+  {
+    href: "https://usefulshelf.co/apps/tinycast?utm_source=tinycast.dev&utm_medium=referral&utm_campaign=badge&utm_content=light",
+    alt: "Featured on UsefulShelf",
+    src: "/badges/usefulshelf.svg",
+    darkSrc: "/badges/usefulshelf-lime.svg",
+    width: 248,
+    height: 66,
+  },
+  {
+    href: "https://www.trymacapps.com/app/tinycast",
+    alt: "Featured on TryMacApps",
+    src: "/badges/trymacapps.png",
+    width: 200,
+    height: 67,
+    // Dark ink on a transparent ground, so it would vanish on the dark canvas.
+    isInvertedInDark: true,
+  },
+];

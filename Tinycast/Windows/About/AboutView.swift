@@ -2,10 +2,12 @@ import AppKit
 import SwiftUI
 
 struct AboutView: View {
+    @Environment(AppCore.self) private var core
+
     private static var version: String {
         let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
-        return "Version \(short) (\(build))"
+        return String(localized: "Version \(short) (\(build))")
     }
 
     // Cached, and read from the bundle: the app icon is generic until LaunchServices registers.
@@ -20,6 +22,7 @@ struct AboutView: View {
     }()
 
     private static let iconSize: CGFloat = 88
+    private static let supportTile: CGFloat = 30
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,10 +32,12 @@ struct AboutView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, Theme.Spacing.lg)
                 }
+                .settingsAnchor(.aboutAbout)
                 links
                 support
             }
             .formStyle(.grouped)
+            .settingsScrollTarget(.about)
 
             // Outside the form, so the copyright stays pinned to the bottom edge.
             footer
@@ -54,6 +59,7 @@ struct AboutView: View {
                 Text(Self.version)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
                     .padding(.horizontal, Theme.Spacing.md)
                     .padding(.vertical, Theme.Spacing.xs / 2)
                     .background(
@@ -62,9 +68,16 @@ struct AboutView: View {
                     .overlay(
                         Capsule().strokeBorder(Theme.Colors.cardStroke, lineWidth: 1)
                     )
+                Button {
+                    core.updateCoordinator.checkForUpdates()
+                } label: {
+                    SettingsRowTitle(.aboutAbout, "Check for Updates")
+                }
+                .buttonStyle(.link)
+                .font(.caption)
             }
 
-            Text("A tiny, native macOS launcher.")
+            Text("A native macOS launcher for everyday productivity. Lightweight and open source.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -76,26 +89,36 @@ struct AboutView: View {
                 AboutLinkRow(link: link)
             }
         } header: {
-            Text("Links")
+            SettingsSectionHeader(.aboutLinks)
         }
     }
 
     private var support: some View {
         Section {
-            HStack(alignment: .top, spacing: Theme.Spacing.lg) {
-                Image(systemName: "bolt.fill")
-                    .foregroundStyle(Theme.Colors.brand)
-                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                    Text("Buy Me Brave Origin")
-                    Text(
-                        "If you enjoy my work and would like to support me or buy me Brave Origin,"
-                            + " feel free to reach out on Discord, X, or via email."
+            HStack(spacing: Theme.Spacing.xl) {
+                // Brand is a fixed hue, so an alpha on it holds up in both appearances.
+                RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                    .fill(Theme.Colors.brand.opacity(0.16))
+                    .frame(width: Self.supportTile, height: Self.supportTile)
+                    .overlay(
+                        Image(systemName: "heart.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Theme.Colors.brand)
                     )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                    SettingsRowTitle(.aboutLinks, "Support")
+                        .font(.body.weight(.medium))
+                    Text("Free and open source, funded out of pocket.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                Spacer(minLength: Theme.Spacing.lg)
+                Button("Support…") { core.supportCoordinator.showSupport() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.Colors.brand)
             }
+            .padding(.vertical, Theme.Spacing.xs)
         }
     }
 
@@ -106,7 +129,6 @@ struct AboutView: View {
     }
 }
 
-/// One external destination in the About "Links" card.
 private struct AboutLink: Identifiable {
     enum Glyph {
         case symbol(String)
@@ -122,27 +144,26 @@ private struct AboutLink: Identifiable {
 
     static let all: [AboutLink] = [
         AboutLink(
-            id: "website", glyph: .symbol("globe"), title: "Website",
-            detail: "abue-ammar.github.io/tinycast",
-            url: URL(string: "https://abue-ammar.github.io/tinycast/")!),
+            id: "website", glyph: .symbol("globe"), title: String(localized: "Website"),
+            detail: "tinycast.dev",
+            url: URL(string: "https://tinycast.dev/")!),
         AboutLink(
             id: "github", glyph: .brand("BrandGitHub"), title: "GitHub",
             detail: "github.com/abue-ammar/tinycast",
             url: URL(string: "https://github.com/abue-ammar/tinycast")!),
         AboutLink(
             id: "discord", glyph: .brand("BrandDiscord"), title: "Discord",
-            detail: "Join the Tinycast community",
+            detail: String(localized: "Join the Tinycast community"),
             url: URL(string: "https://discord.gg/v2Eeb4QQy3")!),
         AboutLink(
             id: "x", glyph: .brand("BrandX"), title: "X", detail: "@abue_ammar",
             url: URL(string: "https://x.com/abue_ammar")!),
         AboutLink(
-            id: "email", glyph: .symbol("envelope"), title: "Email",
+            id: "email", glyph: .symbol("envelope"), title: String(localized: "Email"),
             detail: "iabueammar@gmail.com", url: URL(string: "mailto:iabueammar@gmail.com")!)
     ]
 }
 
-/// A row in the About "Links" card: glyph, title, destination and the arrow.
 private struct AboutLinkRow: View {
     let link: AboutLink
 

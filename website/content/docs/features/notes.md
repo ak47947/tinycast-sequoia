@@ -1,93 +1,161 @@
 ---
 title: Notes
-description: Plain Markdown files in one floating editor — no database, no frontmatter, no sidecar.
+description: Plain Markdown files in one floating editor, with no database or extra files.
 ---
 
-Notes is an unlimited local collection of Markdown files in a single floating window.
+Notes is a collection of plain Markdown files, as many as you want, edited in one floating window.
 
-**Settings → Notes** holds the feature switch. It ships **off**, and enabling it alone does not
-create the folder or write anything.
+Turn it on in **Settings → Notes**. It's **off** by default, and turning it on doesn't create the
+folder or write anything until you make your first note.
 
 ## Commands
 
-Three commands, each with its own optional global shortcut:
+There are three commands, and each can have its own global shortcut in **Settings → Notes**:
 
-| Command          | Does                                                         |
-| ---------------- | ------------------------------------------------------------ |
-| **Show Notes**   | Selects the last active note and shows or focuses the window |
-| **Create Note**  | Creates and selects one new Untitled note                    |
-| **Search Notes** | Shows the window with the switcher open and focused          |
+| Command          | Does                                                     |
+| ---------------- | -------------------------------------------------------- |
+| **Show Notes**   | Opens your last note. Press it again to hide the window. |
+| **Create Note**  | Creates a new Untitled note and opens it                 |
+| **Search Notes** | Opens the window with the note switcher ready for typing |
 
-**Show Notes does not toggle the window closed.** Show means show.
+### In the menu bar
+
+Turn on **Show in Menu Bar** in **Settings → Notes** to add a Notes icon to the menu bar. It's
+**off** by default. Click the icon to show or hide your notes. Right-click it, or Control- or
+Option-click it, for **Create Note** and **Search Notes**.
 
 ## In the window
 
-| Key                      | Does                                    |
-| ------------------------ | --------------------------------------- |
-| <kbd>⌘</kbd><kbd>N</kbd> | Create a note                           |
-| <kbd>⌘</kbd><kbd>P</kbd> | Open or refocus the switcher            |
-| <kbd>⌘</kbd><kbd>O</kbd> | Open the Notes folder in Finder         |
-| <kbd>⌘</kbd><kbd>W</kbd> | Hide the window                         |
-| <kbd>⎋</kbd>             | Close the switcher, then hide           |
-| <kbd>⌘</kbd><kbd>⌫</kbd> | Move the selected switcher row to Trash |
+The title bar has three buttons: **Create**, **Browse** and **Open Folder**.
 
-<kbd>⌘</kbd><kbd>Q</kbd> is bound to nothing app-wide, so **no chord over Notes can quit Tinycast**.
+| Key                           | Does                                        |
+| ----------------------------- | ------------------------------------------- |
+| <kbd>⌘</kbd><kbd>N</kbd>      | Create a note                               |
+| <kbd>⌘</kbd><kbd>P</kbd>      | Open the switcher, or return to it          |
+| <kbd>⌘</kbd><kbd>O</kbd>      | Open the Notes folder in Finder             |
+| <kbd>⌘</kbd><kbd>F</kbd>      | Find in the note                            |
+| <kbd>⌘</kbd><kbd>W</kbd>      | Hide the window                             |
+| <kbd>esc</kbd>                | Close Find or the switcher, then hide       |
+| <kbd>⌘</kbd><kbd>delete</kbd> | Move the selected switcher row to the Trash |
+
+<kbd>⌘</kbd><kbd>Q</kbd> does nothing in Notes, so you can't quit Tinycast by accident while
+writing.
 
 ## Files
 
-Notes live in Tinycast's Application Support folder, one per note:
+By default, notes are stored in Tinycast's Application Support folder:
 
 ```
 ~/Library/Application Support/com.tinycast.app/Notes/
 ```
 
-**One regular `.md` file is one note, and its filename without the extension is its title.** There is
-no frontmatter, no embedded ID, no database and no sidecar file. What you see is the file.
+To keep notes in another folder, click **Choose…** next to **Notes Folder** in **Settings → Notes**.
+Tinycast uses that folder as it is and doesn't move notes out of the old one. **Use Default** goes
+back. The folder choice isn't included in [backups](/docs/reference/backup).
 
-Immediate children only — subfolders, hidden files and symlinks are ignored. Sorted by modification
-date, then title.
+**Each note is one `.md` file, and the file name is the note's title.** There's no frontmatter,
+hidden ID, database or extra file. The file is the note.
 
-New notes are `Untitled.md`, then `Untitled 2.md`, and so on. Name collisions are case- and
-diacritic-insensitive, so `plán` beside `Plan` becomes `plán 2.md` — but a note never collides with
-itself, so you can rename one to change only its case or accents.
+Only files directly in that folder are included. Subfolders, hidden files and links are ignored.
+Notes are sorted by when they were last changed, newest first.
 
-Renaming a note changes its identity, since the filename _is_ the identity. There are no per-note
-hotkeys or favorites that could point at the old one.
+New notes are named `Untitled.md`, then `Untitled 2.md`, and so on. **Until you rename a note, its
+first line is shown as the title**, so a list of untitled notes is still easy to scan. Markdown
+symbols like `#`, `- [ ]` and `**` are removed from that title.
+
+File names are compared without case or accents, so a new `plán` next to `Plan` becomes
+`plán 2.md`. A note never conflicts with itself, so you can rename a note just to change its case or
+accents.
 
 ## The editor
 
-One plain text view. **Markdown markers stay visible — there is no syntax highlighting, no rendered
-preview and no link behaviour.** The string on screen, in search, and in the file are identical.
+**Markdown is formatted as you write.** Headings, bold, italic, strikethrough, inline code, links,
+lists, tasks, quotes, code blocks and horizontal rules are all shown formatted. The line you're
+editing shows its Markdown symbols, and every other line stays formatted. The file itself doesn't
+change: what's saved, searched and copied is the plain Markdown you typed.
 
-AppKit owns typing, selection, cut/copy/paste, Find, marked text, emoji, combining characters and
-undo. An empty note shows a `Start writing…` placeholder, and the footer counts characters.
+Images and syntax highlighting in code blocks aren't rendered; they appear as text. Tables also
+appear as text, in a fixed-width font without other formatting, so their columns stay aligned.
+
+- **Click a checkbox** to check or uncheck a task. The text cursor stays where it was.
+- **Click a link** to open it in your browser. To edit the link instead, click right at its edge.
+- **Return** continues a list, and ends it on an empty item. **Tab** and **Shift-Tab** indent and
+  outdent items.
+- Type `[] ` at the start of a line to start a task.
+- Paste a web address over selected text to turn the text into a link.
+
+| Key                                                              | Does                        |
+| ---------------------------------------------------------------- | --------------------------- |
+| <kbd>⌘</kbd><kbd>B</kbd>                                         | Bold                        |
+| <kbd>⌘</kbd><kbd>I</kbd>                                         | Italic                      |
+| <kbd>⇧</kbd><kbd>⌘</kbd><kbd>X</kbd>                             | Strikethrough               |
+| <kbd>⌘</kbd><kbd>E</kbd>                                         | Inline code                 |
+| <kbd>⌥</kbd><kbd>⌘</kbd><kbd>C</kbd>                             | Code block                  |
+| <kbd>⇧</kbd><kbd>⌘</kbd><kbd>B</kbd>                             | Quote                       |
+| <kbd>⌥</kbd><kbd>⌘</kbd><kbd>T</kbd>                             | Show the formatting buttons |
+| <kbd>⌘</kbd><kbd>K</kbd>                                         | Link                        |
+| <kbd>⇧</kbd><kbd>⌘</kbd><kbd>7</kbd>                             | Numbered list               |
+| <kbd>⇧</kbd><kbd>⌘</kbd><kbd>8</kbd>                             | Bullet list                 |
+| <kbd>⇧</kbd><kbd>⌘</kbd><kbd>9</kbd>                             | Task list                   |
+| <kbd>⌥</kbd><kbd>⌘</kbd><kbd>1</kbd>, <kbd>2</kbd>, <kbd>3</kbd> | Heading 1, 2, 3             |
+| <kbd>⌥</kbd><kbd>⌘</kbd><kbd>0</kbd>                             | Back to a plain line        |
+
+If you'd rather see the raw text, turn off **Render Markdown** in **Settings → Notes**. The editor
+then shows every symbol as you typed it, and Return, Tab and the shortcuts above behave like they do
+in any plain text field.
+
+### The formatting bar
+
+There's a round button at the bottom right of each note. Click it, or press
+<kbd>⌥</kbd><kbd>⌘</kbd><kbd>T</kbd>, and a button for each of the shortcuts above appears, along
+with a heading menu. Click a button to format the selection or the word at the cursor, and click a
+highlighted button to remove that formatting. Hover over a button to see its shortcut. Tinycast
+remembers whether you left the bar open. When the window is narrow, the character count moves aside
+to make room for the buttons.
+
+To hide it, turn off **Show Formatting Bar** in **Settings → Notes**. The shortcuts still work. The
+bar is also hidden while Render Markdown is off.
+
+Typing, selecting, copy and paste, Find, emoji, input methods, and undo and redo
+(<kbd>⌘</kbd><kbd>Z</kbd> and <kbd>⇧</kbd><kbd>⌘</kbd><kbd>Z</kbd>) all work like they do in any Mac
+text field. An empty note shows **Start writing…**, and the character count appears below the
+note.
+
+[Snippets](/docs/features/snippets) expand directly in the editor, and you can undo them.
 
 ## The switcher
 
-An empty query lists notes by recency, reading metadata only. A query searches titles and literal
-bodies after a 120 ms pause, capped at **200** results.
+The switcher opens below the title bar. With nothing typed, it lists notes by when you last changed
+them. When you type, it searches titles and note text after a 120 ms pause and shows up to **200**
+results.
 
-Rows expose VoiceOver actions to activate, rename and trash by the real note title.
+Each row has VoiceOver actions to open, rename and move that note to the Trash.
 
-## Saving, and the one real caveat
+## Saving, and one important caveat
 
-Edits save automatically after a 300 ms pause.
+Changes are saved automatically 300 ms after you stop typing.
 
-**A save overwrites whatever is on disk.** There is no file watcher and no revision check, so if you
-edit the _currently active_ note in another app while Tinycast has it open, that edit is lost on the
-next autosave.
+**Saving overwrites the file on disk.** Tinycast doesn't watch the folder for changes, so if you
+edit the note that's _open in Tinycast_ in another app, that edit is lost at the next autosave.
 
-<kbd>⌘</kbd><kbd>O</kbd> invites exactly this, and it is the accepted trade for having no database.
+<kbd>⌘</kbd><kbd>O</kbd> makes this easy to do by accident. It's the tradeoff for storing notes as
+plain files instead of in a database.
 
-Every _other_ external change is picked up fine, because showing the window re-lists the folder
-first — a note added or edited outside Tinycast appears as expected.
+When you reopen the window, Tinycast reads the folder again and reloads the active note if it has no
+unsaved changes. Notes you add or edit elsewhere appear as expected. An unsaved draft is kept,
+including after a failed save. Reloading changed contents clears that note's undo history; reopening
+unchanged contents keeps it.
 
-Quitting waits for the save to flush, but never blocks the quit.
+When you quit, Tinycast waits for the last save to finish, but it never stops the app from quitting.
 
 ## The window
 
-You own the size; macOS remembers it. The collection may be empty — deleting the last note is
-allowed, and Create Note still works from the empty state.
+**The window's height fits the note.** It grows and shrinks as you write until it reaches its
+maximum height or the edge of the screen, and then the note scrolls. You choose the width, and macOS
+remembers where the window is. If you drag the height, it stays until your next edit. Double-click
+the title bar to move the window to the top-right corner of the screen.
 
-Hiding the window restores the app you came from, but only while that app is still frontmost. Closing
-a window you already walked away from leaves you where you are.
+You can delete every note; the window then shows an empty state, and Create Note still works.
+
+Hiding the window returns you to the app you were using, but only if that app is still in front. If
+you've already switched to something else, you stay there.

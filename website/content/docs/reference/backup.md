@@ -1,65 +1,124 @@
 ---
 title: Backup & restore
-description: Export your setup to a file, restore it on another Mac, and what a backup deliberately cannot do.
+description: Save your setup to one file, choose what to export and what to import, and what a backup never does.
 ---
 
 **Settings → Backup**
 
-| Action          | Does                                                                     |
-| --------------- | ------------------------------------------------------------------------ |
-| Export Settings | Saves shortcuts, custom commands, favorites and preferences to JSON      |
-| Import Settings | Restores from a Tinycast backup — only values present in the file change |
+A backup is a single `.tinycast` file. You choose what goes into it when you export, and separately
+choose what to restore when you import. So a backup that contains everything can still restore only
+your snippets.
+
+| Category             | What's included                                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Settings & Shortcuts | Shortcuts, custom commands, quicklinks, window layouts, rooms, custom window sizes, favorites, aliases, preferences |
+| Clipboard History    | Text and image clips with their images, and references to copied files                                              |
+| Snippets             | Your snippet Markdown files                                                                                         |
+| Notes                | Your note Markdown files                                                                                            |
+| Launcher Learning    | Your learned launcher ranking, plus emoji and calculator history                                                    |
+
+The launcher also has **Export Backup** and **Import Backup** commands. They always include
+everything, because there's no room for checkboxes in the launcher.
 
 ## Read this before relying on it
 
-**The format is internal and may change between releases. The only guarantee is that export → import
-round-trips within one build.**
+**The backup format can change between versions of Tinycast. A backup is only guaranteed to import
+into the same version that created it.**
 
-There is no version field and no migration path. A backup is for moving your setup to another Mac
-today, or for restoring after a reinstall — it is not a long-term archive.
+The file records which version created it. If your version of Tinycast doesn't recognize the
+format, it tells you instead of importing part of the file. Use backups to move your setup to
+another Mac or to restore after reinstalling, not as a long-term archive.
 
-## Imports are never silent
+## Imports always show what they did
 
-An import always reports a summary of what it applied.
+Every import shows a summary of what changed, by category.
 
-A settings file that quietly rewrote your hotkeys would be hostile, so it does not. If the file
-contains custom commands, the import **warns before accepting executable content**, because that is
-a genuinely different category of risk.
+If the file contains custom commands, **Tinycast warns you before adding them**, because a file that
+adds shell commands without telling you is a security risk.
 
-## A backup can never grant a capability
+Imports add to what you have instead of overwriting it. Snippets and notes are added next to your
+existing ones, and a note with a name that's already taken gets a number added instead of replacing
+yours. Importing the same file twice doesn't create duplicates.
 
-This is the important one.
+Launcher Learning is the exception. It replaces your existing data, because combining the habits of
+two Macs wouldn't match either one.
 
-Two flags are excluded from every export **on purpose**, because each is a consent decision rather
-than a preference:
+Copied files in clipboard history are backed up as paths, not file contents. When you import, entries
+for files that don't exist on the new Mac are skipped.
 
-- **`snippetsEnabled`** — enabling snippets is consent to keystroke matching
-- **`extensionsEnabled`** — enabling extensions is consent to run third-party code
+## A backup can never turn on a capability
 
-So importing a backup someone sent you cannot switch on keystroke listening or third-party code
-execution. You have to do that yourself, in the app, having read what it says.
+Some switches are never included in a backup, because turning them on means agreeing to something,
+not just setting a preference:
 
-## Other deliberate exclusions
+- **Snippets**: agreeing to keyword matching
+- **Extensions**: agreeing to run third-party code
+- **Calendar**: agreeing to let Tinycast read your calendar
+- **Auto Join Meetings** and **Camera Preview**: agreeing to open links and turn on the camera
+- **Quick Actions**: agreeing to let Tinycast type into other apps
+- **AI** and **MCP servers**: agreeing to send text to a model and run server code
+- **Search text in images and PDFs**: agreeing to text recognition in the background
+- **Dictation**: agreeing to let Tinycast use your microphone
+- **Sync settings file**: agreeing to let a file on this Mac change your settings
+- **Fallback order and checkboxes**: these could add a shell command runner to your launcher
 
-| Excluded                                                      | Why                                   |
-| ------------------------------------------------------------- | ------------------------------------- |
-| Extension registry list, package manager, custom search paths | Describe this machine, not your setup |
-| Palette position                                              | Machine-local window geometry         |
-| Per-snippet confirmation flags                                | —                                     |
+This means a backup someone sends you can't turn on keystroke listening, run third-party code, read
+your calendar, record from your microphone or contact an AI provider. You turn those features on
+yourself, in the app, after reading what they do. Importing snippets doesn't turn snippets on.
 
-Two values come from outside Tinycast's own settings — **Launch at login** is owned by the system
-login item, and **Show in menu bar** is read from the live state — but both are handled correctly.
+## Other things that aren't included
 
-## Where your data actually lives
+| Not included                                                                                                               | Why                                                              |
+| -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Extensions: their code, data and sign-ins                                                                                  | They're third-party code, and their sign-ins are in the Keychain |
+| AI chats, API keys, and all AI and MCP settings                                                                            | Conversations and keys stay on the Mac where they were created   |
+| Quick Actions model, prompts, language and custom actions                                                                  | An import should never change what a shortcut does to your text  |
+| Extension package manager and custom search paths                                                                          | They're specific to this Mac, not part of your setup             |
+| Dictation settings, its shortcut and downloaded models                                                                     | They belong to this Mac's microphone and disk                    |
+| Palette position, auto-switch input source, calendar checkboxes, the browser for meeting links, Snippets and Notes folders | They name things on this Mac that another Mac may not have       |
+| Cached data, like currency rates and update checks                                                                         | Tinycast downloads it again as needed                            |
 
-Settings backups cover _preferences_. Your content lives as ordinary files:
+Clipboard images are stored inside the backup by name, not by their location on your Mac. The only
+paths a backup includes are the locations of copied files, because that location is what the entry
+records.
 
-| What                                          | Where                                                      |
-| --------------------------------------------- | ---------------------------------------------------------- |
-| [Snippets](/docs/features/snippets)           | `~/Library/Application Support/com.tinycast.app/Snippets/` |
-| [Notes](/docs/features/notes)                 | `.../Notes/`                                               |
-| [Quicklinks](/docs/launcher/quicklinks)       | `.../quicklinks.sqlite3` — and it has its own JSON export  |
-| [Clipboard history](/docs/features/clipboard) | `~/Library/Caches/com.tinycast.app/`                       |
+**Launch at login** and **Show in menu bar** are read from their current state, so they're restored
+the way you had them.
 
-Snippets and notes are plain Markdown. Copying those folders is a perfectly good backup, and they
-are readable without Tinycast — which is the point of storing them that way.
+## Settings file
+
+The **Sync settings file** switch in **Settings → Backup → Settings File** keeps a copy of your
+settings in `~/.config/tinycast/settings.json`. It's off by default. The beta uses
+`~/.config/tinycast-beta/`.
+
+While it's on, a change you make in Settings is written to the file, and an edit you save in the
+file applies in Tinycast right away. If the file is a symlink, it stays one, so it can live in a
+dotfiles repository.
+
+The file holds your preferences, the shortcuts and aliases of apps, System Settings panes, system
+actions and built-in commands, and all of window management, including custom sizes, layouts and
+rooms. It never holds your snippets, notes, quicklinks, custom commands, MCP servers or AI
+connections.
+
+If the file already exists when you turn sync on, Tinycast asks whether to **Import** it or
+**Replace** it with your current settings. A value Tinycast can't use keeps the current one, and a
+message tells you what was wrong. Turning sync off leaves the file where it is.
+
+Like a backup, the file can't turn on Snippets, Extensions, Calendar, Auto Join Meetings, Camera
+Preview, Quick Actions, MCP servers, Dictation or text recognition.
+
+## Where your data is stored
+
+Everything a backup includes is also a regular file. By default, it's in
+`~/Library/Application Support/com.tinycast.app/`:
+
+| What                                          | Where                                             |
+| --------------------------------------------- | ------------------------------------------------- |
+| [Snippets](/docs/features/snippets)           | `Snippets/`, or the **Snippets Folder** you chose |
+| [Notes](/docs/features/notes)                 | `Notes/`, or the **Notes Folder** you chose       |
+| [Quicklinks](/docs/launcher/quicklinks)       | `quicklinks.sqlite3`, with its own JSON export    |
+| [Clipboard history](/docs/features/clipboard) | `clipboard.sqlite3`, with images next to it       |
+| [AI chats](/docs/ai)                          | `ai-chats.sqlite3`, never included in a backup    |
+
+Snippets and notes are plain Markdown files. Copying those folders works as a backup, and you can
+read the files without Tinycast.

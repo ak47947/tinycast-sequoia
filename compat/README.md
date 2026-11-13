@@ -1,145 +1,36 @@
 # macOS 15 (Sequoia) channel
 
-Tinycast's `main` targets macOS 26 and uses Liquid Glass. This branch (`compat/macos15`) ships the
-same app to macOS 15 **without changing a single file on `main`**.
+This branch tracks upstream `v0.12.11` and targets macOS 15.0+. The compatibility work lives in the
+sources themselves — there is no patch to apply and no second tree to keep in sync.
 
-## Why a patch and not a lower deployment target
+## What differs from upstream
 
-`glassEffect(_:in:)` is `@available(macOS 26)`. Lowering `MACOSX_DEPLOYMENT_TARGET` is only a build
-setting, but the compiler then hard-errors at every call site, and no build flag suppresses that —
-the deployment target *is* the availability contract. So some source must be gated. It's a handful of
-call sites, and they live here as `macos15.patch` instead of on `main`.
+- `MACOSX_DEPLOYMENT_TARGET` and `LSMinimumSystemVersion` are 15.0. The CI build still uses Xcode 26's
+  SDK and ships universal `arm64 x86_64`; see `.github/workflows/release-sequoia.yml`.
+- Every `glassEffect` / `GlassEffectContainer` call goes through `frosted(in:)` / `frostedMenu(in:)`
+  in `Tinycast/DesignSystem/Theme.swift`, which draws `.ultraThinMaterial`, a hairline and a soft
+  shadow. No macOS 26-only SwiftUI symbol is linked.
+- Apple Intelligence (`FoundationModels`) is macOS 26 only: `AppleIntelligenceProvider` reports
+  `.deviceNotEligible` and `AIProviderFactory` rejects that route. Every other AI provider and all
+  MCP tool calling still work.
 
-Verified: with those sites gated, the whole app compiles at `-target arm64-apple-macos15.0`,
-builds `Release`, and produces `minos 15.0` / `LSMinimumSystemVersion 15.0` against SDK 26.5. The
-six SwiftUI glass symbols become **weak** imports, so dyld binds them to null on Sequoia and the
-`#available` guard means they're never called.
+Everything else is upstream `v0.12.11` verbatim.
 
-## What's gated
+## Build & install
 
-Both in one `ViewModifier` (`FrostedSurface`) in `Tinycast/DesignSystem/Theme.swift`:
-
-| Helper | macOS 26 | macOS 15 |
-|---|---|---|
-| `frosted(in:)` — floating pill + menu circle | `glassEffect(.regular.interactive().tint(glassFrost))` | `.ultraThinMaterial` + frost overlay + 0.5pt hairline + soft shadow |
-| `frostedMenu(in:)` — popover panels (`PopoverMenu`, `ShortcutRecorderPopover`, `ExtensionActionsPanel`, `NoteSwitcherView`) | `glassEffect(.regular)` | same fallback |
-
-`docs/ui.md` confines glass to floating controls, so that is the entire visual surface affected. The
-main palette surface is `NSVisualEffectView` vibrancy — macOS 10.10 API, unchanged on Sequoia, it
-just renders as classic blur.
-
-## Universal, unlike the mainline build
-
-macOS 15 is the last release that runs on Intel, so this channel — and only this channel — ships
-`arm64 x86_64`. A thin arm64 DMG installs on an Intel Mac and then fails to launch with *"the
-application cannot be opened because it has an incorrect executable format"*, which is what shipped
-up to `v0.9.4-sequoia`. Both `verify.sh` and the workflow pass `ARCHS="arm64 x86_64"` explicitly
-rather than trusting `ARCHS_STANDARD`, and assert the 15.0 floor and weak glass linkage **per
-slice** — `vtool -show-build-version` without `-arch` reports every slice at once, so the old
-single-value check could not have caught this.
-
-## Build with Xcode 26, not Xcode 16
-
-The artifact is built against the **new** SDK with only the deployment target lowered. An abandoned
-earlier attempt built on `macos-15` with Xcode 16.2 instead and needed ~30 files of unrelated
-concurrency churn (`@MainActor` annotations, `@preconcurrency import Darwin`,
-`#if compiler(>=6.2)` fences). None of that is necessary. Don't redo it.
-
-## Everyday use
+Push a `v<version>-sequoia` tag. The workflow builds, asserts `minos 15.0` on both slices, packages a
+DMG and publishes a prerelease. Install it by dragging `Tinycast.app` into `/Applications`, then:
 
 ```sh
-./compat/release.sh           # ship it (see below) — the normal entry point
-./compat/verify.sh --quick    # ~35s: patch applies + typechecks at 15 AND 26
-./compat/verify.sh            # + Release build, 15.0 floor assert, weak-linkage assert
+xattr -dr com.apple.quarantine "/Applications/Tinycast.app"
 ```
 
-`verify.sh` never touches your working tree — it exports tracked files to a temp dir and patches the
-copy, so it's safe to run with uncommitted changes on any branch.
+The bundle id stays `com.tinycast.app`, so upgrading from an older Sequoia build keeps settings,
+clipboard history, the login item and the Accessibility grant. There is no in-app updater on this
+channel — download the next `-sequoia` DMG to update.
 
-When `main` moves, resync:
+## Verification scope
 
-```sh
-git checkout compat/macos15 && git merge main
-./compat/verify.sh
-```
-
-If the patch has rotted or `main` gained a new macOS 26-only API, run the **`macos15-compat` skill**
-(`.claude/skills/macos15-compat/`) — it regenerates the patch and re-verifies.
-
-## Cutting a release
-
-One command, from this branch:
-
-```sh
-./compat/release.sh              # sync with main, verify, tag, push — the whole thing
-./compat/release.sh --dry-run    # everything except publishing
-```
-
-The version defaults to the newest **stable** mainline tag, so `v0.7.5` ships as `v0.7.5-sequoia` —
-the Sequoia build tracks whatever shipped on macOS 26. Override with `--version 0.8.0`, replace an
-existing tag with `--retag`.
-
-If it exits non-zero (patch rotted, or `main` gained a macOS 26-only API), run the **`macos15-compat`
-skill** — it repairs and then releases. That's the intended path: run the skill, do no git yourself.
-
-Releases are **tag-triggered** rather than a button, because `workflow_dispatch` only fires for
-workflows present on the default branch and this one deliberately isn't there. `release.sh` creates
-and pushes the tag for you.
-
-The workflow verifies compatibility *before* publishing anything, then builds, asserts the 15.0
-floor on the shipping binary, packages a DMG, publishes a GitHub Release, and bumps the tap cask.
-
-Identity notes:
-
-- **Bundle ID and display name match the mainline channel** (`com.tinycast.app` / `Tinycast`), so a
-  Sequoia user who later upgrades to macOS 26 keeps prefs, caches, login item and Accessibility
-  grant — all keyed by `Bundle.main.bundleIdentifier`.
-- Releases are **always** marked prerelease, including stable-Sequoia:
-  `website/src/lib/use-version.ts` reads `/releases/latest`, which GitHub defines as the latest
-  *non-prerelease*, so a full release here would hijack the version shown on the site.
-
-## Tap setup (done — `Casks/tinycast-sequoia.rb` exists)
-
-There is **no in-app updater** — Homebrew is the only update path, so the cask guards are the entire
-safety mechanism routing each machine to the right build.
-
-`depends_on macos:` semantics, verified against Homebrew 6.0 rather than the docs (which are stale
-on this point):
-
-| Form | Means |
-|---|---|
-| `depends_on macos: :sequoia` | `>= macOS 15` — a bare symbol is a **minimum**, not an exact match |
-| `depends_on macos: [:sequoia]` | also `>= macOS 15`; the array gives no exact match |
-| `depends_on macos: "<= :sequoia"` | `<= macOS 15`, but the string form is **deprecated** and warns on every install |
-
-So there is no non-deprecated way to express a maximum, and the guards work asymmetrically:
-
-```ruby
-# Casks/tinycast.rb + tinycast@beta.rb
-depends_on macos: :tahoe                                        # >= 26
-conflicts_with cask: "abue-ammar/tinycast/tinycast-sequoia"
-
-# Casks/tinycast-sequoia.rb
-depends_on macos: :sequoia                                      # >= 15, the binary's real floor
-conflicts_with cask: "abue-ammar/tinycast/tinycast"
-```
-
-`tinycast` requiring `>= :tahoe` is what stops a Sequoia machine getting the macOS 26 build — the
-direction that actually matters. The reverse is not blocked: a macOS 26+ user who explicitly asks for
-`tinycast-sequoia` gets it, and it runs, just with the fallback material instead of glass.
-`conflicts_with` stops both being installed at once, since they share `Tinycast.app` and
-`com.tinycast.app`.
-
-Keep the existing `postflight` that runs `xattr -dr com.apple.quarantine`. The cask-bump step
-hard-errors if `Casks/<cask>.rb` doesn't already exist. Repeat for `tinycast@beta-sequoia` if you
-ever want a Sequoia beta channel — it does not exist yet, so a `-beta.N-sequoia` tag would fail at
-the cask step.
-
-## Not verified
-
-The build is proven to compile, link and declare a macOS 15 floor. **Nothing here has been run on
-real macOS 15.** Before publishing, on a Sequoia machine confirm: the fallback material reads as a
-floating control rather than a flat box; the Accessibility prompt and paste-to-`previousApp` focus
-restoration work; the Hyper Key `hidutil` caps remap works; emoji grid and clipboard image
-thumbnails render. The `onScrollGeometryChange`-driven edge dissolve and thin scrollbar are the
-highest-risk items — those APIs are macOS 15.0 exactly, with no headroom.
+A green workflow proves the app compiles, links and declares a 15.0 floor. Runtime behaviour on real
+Sequoia — the fallback material's appearance, Accessibility paste focus restoration, dictation and
+camera prompts, emoji and clipboard image rendering — is checked on the machine that installs it.

@@ -1,27 +1,69 @@
 enum SettingsTab: CaseIterable, Identifiable {
-    case general, applications, systemSettings, systemActions, commands, quicklinks, fileSearch,
-        notes, snippets, windowManagement, clipboard, emoji, extensions, permissions, backup, about
+    case general, applications, systemSettings, systemActions, commands, quicklinks, appleShortcuts,
+        fallbacks, clipboard, snippets, fileSearch, windowManagement, navigation, notes, calendar, emoji,
+        dictation, ai, quickActions, extensions, permissions, backup, about
     /// The case, never an index: a selectable `List` flattens section and row IDs together.
     var id: Self { self }
 
+    init?(slug: String) {
+        guard let tab = Self.allCases.first(where: { $0.slug == slug }) else { return nil }
+        self = tab
+    }
+
+    /// `tinycast://settings/<slug>`; spelled out, so renaming a case never breaks a saved link.
+    var slug: String {
+        switch self {
+        case .general: "general"
+        case .applications: "applications"
+        case .systemSettings: "system-settings"
+        case .systemActions: "system-actions"
+        case .commands: "commands"
+        case .quicklinks: "quicklinks"
+        case .appleShortcuts: "apple-shortcuts"
+        case .fallbacks: "fallbacks"
+        case .clipboard: "clipboard"
+        case .snippets: "snippets"
+        case .fileSearch: "file-search"
+        case .windowManagement: "window-management"
+        case .navigation: "navigation"
+        case .notes: "notes"
+        case .calendar: "calendar"
+        case .emoji: "emoji"
+        case .dictation: "dictation"
+        case .ai: "ai"
+        case .quickActions: "quick-actions"
+        case .extensions: "extensions"
+        case .permissions: "permissions"
+        case .backup: "backup"
+        case .about: "about"
+        }
+    }
+
     var title: String {
         switch self {
-        case .general: return "General"
-        case .applications: return "Applications"
-        case .systemSettings: return "System Settings"
-        case .systemActions: return "System Actions"
-        case .commands: return "Commands"
-        case .quicklinks: return "Quicklinks"
-        case .fileSearch: return "File Search"
-        case .notes: return "Notes"
-        case .snippets: return "Snippets"
-        case .windowManagement: return "Window Management"
-        case .clipboard: return "Clipboard"
-        case .emoji: return "Emoji & Symbols"
-        case .extensions: return "Extensions"
-        case .permissions: return "Permissions"
-        case .backup: return "Backup"
-        case .about: return "About"
+        case .general: return String(localized: "General")
+        case .applications: return String(localized: "Applications")
+        case .systemSettings: return String(localized: "System Settings")
+        case .systemActions: return String(localized: "System Actions")
+        case .commands: return String(localized: "Commands")
+        case .quicklinks: return String(localized: "Quicklinks")
+        case .appleShortcuts: return String(localized: "Apple Shortcuts")
+        case .fallbacks: return String(localized: "Fallbacks")
+        case .ai: return String(localized: "AI")
+        case .quickActions: return String(localized: "Quick Actions")
+        case .dictation: return String(localized: "Dictation")
+        case .fileSearch: return String(localized: "File Search")
+        case .notes: return String(localized: "Notes")
+        case .snippets: return String(localized: "Snippets")
+        case .navigation: return String(localized: "Navigation")
+        case .windowManagement: return String(localized: "Window Management")
+        case .clipboard: return String(localized: "Clipboard")
+        case .emoji: return String(localized: "Emoji & Symbols")
+        case .calendar: return String(localized: "Calendar")
+        case .extensions: return String(localized: "Extensions")
+        case .permissions: return String(localized: "Permissions")
+        case .backup: return String(localized: "Backup")
+        case .about: return String(localized: "About")
         }
     }
 
@@ -33,12 +75,19 @@ enum SettingsTab: CaseIterable, Identifiable {
         case .systemActions: return "bolt"
         case .commands: return "terminal"
         case .quicklinks: return "link"
+        case .appleShortcuts: return "square.2.layers.3d"
+        case .fallbacks: return "arrow.turn.down.right"
+        case .ai: return "sparkles"
+        case .quickActions: return "wand.and.sparkles"
+        case .dictation: return "waveform"
         case .fileSearch: return "doc.text.magnifyingglass"
         case .notes: return "text.page"
         case .snippets: return "curlybraces"
+        case .navigation: return "arrow.left.arrow.right"
         case .windowManagement: return "macwindow"
         case .clipboard: return "doc.on.clipboard"
         case .emoji: return "face.smiling"
+        case .calendar: return "calendar"
         case .extensions: return "puzzlepiece.extension"
         case .permissions: return "lock.shield"
         case .backup: return "arrow.up.arrow.down.circle"
@@ -55,10 +104,10 @@ enum SettingsSection: CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .general: return "General"
-        case .launcher: return "Launcher"
-        case .features: return "Features"
-        case .advanced: return "Advanced"
+        case .general: return String(localized: "General")
+        case .launcher: return String(localized: "Launcher")
+        case .features: return String(localized: "Features")
+        case .advanced: return String(localized: "Advanced")
         }
     }
 
@@ -66,10 +115,15 @@ enum SettingsSection: CaseIterable, Identifiable {
         switch self {
         case .general: return [.general, .permissions]
         case .launcher:
-            return [.applications, .systemSettings, .systemActions, .commands, .quicklinks]
-        case .features:
             return [
-                .fileSearch, .notes, .snippets, .windowManagement, .clipboard, .emoji, .extensions
+                .applications, .systemSettings, .systemActions, .commands, .quicklinks,
+                .appleShortcuts, .fallbacks
+            ]
+        case .features:
+            // Everyday tools first; AI and extensions are opt-in extras.
+            return [
+                .clipboard, .snippets, .fileSearch, .windowManagement, .navigation, .notes,
+                .calendar, .emoji, .dictation, .ai, .quickActions, .extensions
             ]
         case .advanced: return [.backup, .about]
         }

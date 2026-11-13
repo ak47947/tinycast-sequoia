@@ -3,15 +3,22 @@ import SwiftUI
 struct ApplicationsSettingsView: View {
     var body: some View {
         Form {
-            // Scopes first: they decide what gets indexed, so they read before the results.
+            LauncherCategorySwitchSection(
+                kind: .application, anchor: .applicationsApplications,
+                title: "Enable Applications")
+
             SearchScopesSection()
 
             LauncherItemsSection(
                 kind: .application,
-                header: "Applications",
-                searchPrompt: "Search applications…")
+                anchor: .applicationsApplications,
+                searchPrompt: "Search applications…",
+                emptyMessage: LocalizedStringResource("applications-empty", defaultValue: "Nothing here yet.")
+            )
         }
         .formStyle(.grouped)
+        .settingsScrollTarget(.applications)
         .releasesFocusOnOutsideClick()
     }
+
 }

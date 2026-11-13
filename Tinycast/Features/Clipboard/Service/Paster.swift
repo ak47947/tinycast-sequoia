@@ -17,6 +17,7 @@ enum Paster {
         _ item: ClipboardItem, store: ClipboardStore, previousApp: NSRunningApplication?
     ) -> Bool {
         guard write(item, store: store) else { return false }
+        store.promote(item)
         previousApp?.activate()
         DispatchQueue.main.asyncAfter(deadline: .now() + activationDelay) {
             postCommandV()
@@ -24,19 +25,32 @@ enum Paster {
         return true
     }
 
+    /// Paste only the item's text, so a file arrives as its path and the receiver's style applies.
+    @MainActor @discardableResult
+    static func pastePlainText(
+        _ item: ClipboardItem, store: ClipboardStore, previousApp: NSRunningApplication?
+    ) -> Bool {
+        guard let text = item.plainText else { return false }
+        pasteString(text, previousApp: previousApp)
+        store.promote(item)
+        return true
+    }
+
     /// Put the item on the pasteboard without pasting; the marker stops re-capture.
     @MainActor @discardableResult
     static func copy(_ item: ClipboardItem, store: ClipboardStore) -> Bool {
-        write(item, store: store)
+        guard write(item, store: store) else { return false }
+        store.promote(item)
+        return true
     }
 
     /// Put a string on the pasteboard unmarked, so it enters history like any other copy.
-    @MainActor
-    static func copyPlainText(_ text: String) {
+    @MainActor @discardableResult
+    static func copyPlainText(_ text: String) -> Bool {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.declareTypes([.string], owner: nil)
-        pb.setString(text, forType: .string)
+        return pb.setString(text, forType: .string)
     }
 
     /// String counterpart of `paste`, marker-stamped so the text doesn't re-enter history.
@@ -49,7 +63,15 @@ enum Paster {
         }
     }
 
-    /// String counterpart of `copy(_:store:)`.
+    @MainActor
+    static func pasteFile(_ url: URL, previousApp: NSRunningApplication?) {
+        PasteboardFiles.write(url, to: .general)
+        previousApp?.activate()
+        DispatchQueue.main.asyncAfter(deadline: .now() + activationDelay) {
+            postCommandV()
+        }
+    }
+
     @MainActor
     static func copyString(_ text: String) {
         writeString(text)
@@ -74,7 +96,7 @@ enum Paster {
         pb.setData(Data(), forType: ClipboardManager.internalType)
     }
 
-    /// Paste into `app` without activating it, so the palette stays open.
+    /// Paste into `app` without activating or promoting, so the palette and its rows hold still.
     @MainActor @discardableResult
     static func pasteInPlace(
         _ item: ClipboardItem, store: ClipboardStore, into app: NSRunningApplication?
@@ -90,8 +112,9 @@ enum Paster {
 
     /// Whether anything was written; a vanished item leaves the pasteboard untouched.
     @MainActor @discardableResult
-    private static func write(_ item: ClipboardItem, store: ClipboardStore) -> Bool {
-        let pb = NSPasteboard.general
+    static func write(
+        _ item: ClipboardItem, store: ClipboardStore, to pb: NSPasteboard = .general
+    ) -> Bool {
         switch item.kind {
         case .text:
             guard let text = item.text else { return false }
@@ -99,28 +122,48 @@ enum Paster {
             pb.declareTypes([.string, ClipboardManager.internalType], owner: nil)
             pb.setString(text, forType: .string)
         case .image:
-            guard let url = store.imageURL(for: item), let data = try? Data(contentsOf: url) else {
+            guard let url = store.imageURL(for: item),
+                let data = try? Data(contentsOf: url, options: .mappedIfSafe)
+            else {
                 return false
             }
             pb.clearContents()
-            pb.declareTypes([.png, ClipboardManager.internalType], owner: nil)
+            pb.declareTypes([.png, .fileURL, ClipboardManager.internalType], owner: nil)
             pb.setData(data, forType: .png)
+            // A text-only receiver ignores image data but pastes a file URL as its path.
+            pb.setData(url.dataRepresentation, forType: .fileURL)
+        case .file:
+            guard let url = store.fileURL(for: item),
+                FileManager.default.fileExists(atPath: url.path)
+            else { return false }
+            pb.clearContents()
+            pb.declareTypes([.fileURL, .string, ClipboardManager.internalType], owner: nil)
+            pb.setData(url.dataRepresentation, forType: .fileURL)
+            // Both types: a file-taking app receives the file, a text field receives the path.
+            pb.setString(url.path, forType: .string)
         }
         pb.setData(Data(), forType: ClipboardManager.internalType)
-        // The poller skips marked writes, so this is the only promotion point.
-        store.promote(item)
         return true
     }
 
-    /// Synthesize ⌘V, to `pid` alone when given, else through the system tap.
     @MainActor
     static func postCommandV(toPid pid: pid_t? = nil) {
+        postCommand(key: CGKeyCode(kVK_ANSI_V), toPid: pid)
+    }
+
+    /// Synthesize ⌘C, for reading a selection an app will not surface over Accessibility.
+    @MainActor
+    static func postCommandC(toPid pid: pid_t? = nil) {
+        postCommand(key: CGKeyCode(kVK_ANSI_C), toPid: pid)
+    }
+
+    @MainActor
+    private static func postCommand(key: CGKeyCode, toPid pid: pid_t?) {
         guard Permissions.ensureAccessibility() else { return }
         let source = CGEventSource(stateID: .combinedSessionState)
 
-        let v = CGKeyCode(kVK_ANSI_V)
-        guard let down = CGEvent(keyboardEventSource: source, virtualKey: v, keyDown: true),
-            let up = CGEvent(keyboardEventSource: source, virtualKey: v, keyDown: false)
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true),
+            let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false)
         else { return }
 
         down.flags = .maskCommand

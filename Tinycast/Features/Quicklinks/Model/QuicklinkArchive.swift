@@ -1,6 +1,5 @@
 import Foundation
 
-/// The JSON interchange format for Import/Export Quicklinks.
 enum QuicklinkArchive {
     static let version = 1
 
@@ -22,8 +21,8 @@ enum QuicklinkArchive {
 
         var errorDescription: String? {
             switch self {
-            case .unreadable: return "This file isn't a Tinycast quicklinks export."
-            case .empty: return "This file contains no quicklinks."
+            case .unreadable: return String(localized: "This file isn't a Tinycast quicklinks export.")
+            case .empty: return String(localized: "This file contains no quicklinks.")
             }
         }
     }
@@ -71,8 +70,10 @@ enum QuicklinkArchive {
                     link: candidate.link.trimmingCharacters(in: .whitespacesAndNewlines),
                     openWithBundleID: candidate.openWithBundleID,
                     iconSymbol: candidate.iconSymbol,
+                    isEnabled: candidate.isEnabled,
                     showsInRootSearch: candidate.showsInRootSearch,
-                    pinnedAt: candidate.pinnedAt))
+                    pinnedAt: candidate.pinnedAt,
+                    createdAt: candidate.createdAt))
         }
         return MergeResult(additions: additions, skipped: skipped)
     }

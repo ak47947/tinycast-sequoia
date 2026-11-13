@@ -2,6 +2,7 @@
 
 import { Action, ActionPanel, Detail, Form, Grid, List, MenuBarExtra, Navigation, setActionEffects, useNavigation } from "./components.js";
 import * as enums from "./enums.generated.js";
+import { OAuth } from "./oauth.js";
 import * as system from "./system.js";
 
 const { nestedEnums, ...flatEnums } = enums;
@@ -16,6 +17,8 @@ Action.Style = flatEnums.ActionStyle;
 
 // The convenience actions run their effect through the system APIs rather than duplicating them.
 setActionEffects({
+  storedFormValue: system.storedFormValue,
+  storeFormValues: system.storeFormValues,
   copy: async ({ content, concealed }) => {
     await system.Clipboard.copy(content, { concealed });
     await system.closeMainWindow();
@@ -81,18 +84,9 @@ function rejectingNamespace(name, members) {
 }
 
 const AI = {
-  ...rejectingNamespace("AI", ["ask"]),
+  ...rejectingNamespace("AI", ["ask", "experimental_decide", "refreshModels"]),
   Model: Object.freeze({}),
   Creativity: Object.freeze({}),
-};
-
-const OAuth = {
-  RedirectMethod: nestedEnums.OAuth.RedirectMethod,
-  PKCEClient: class PKCEClient {
-    constructor() {
-      throw new Error("OAuth.PKCEClient is not supported in Tinycast extensions yet. See docs/extensions.md.");
-    }
-  },
 };
 
 const BrowserExtension = rejectingNamespace("BrowserExtension", ["getContent", "getTabs"]);
@@ -152,10 +146,10 @@ export const raycastApi = {
   captureException: system.captureException,
   launchCommand: system.launchCommand,
   updateCommandMetadata: system.updateCommandMetadata,
+  OAuth,
 
   // Unimplemented namespaces
   AI,
-  OAuth,
   BrowserExtension,
   WindowManagement,
 

@@ -10,8 +10,12 @@ struct ExtensionBootConfig: Sendable {
     var homeDirectory: String
     var temporaryDirectory: String
     var workingDirectory: String
-    var cpuCount: Int
     var totalMemory: Double
+    var userID: uid_t
+    var groupID: gid_t
+    var effectiveUserID: uid_t
+    var effectiveGroupID: gid_t
+    var groupIDs: [gid_t]
     var environmentVariables: [String: String]
 
     static func current(supportDirectory: URL) -> ExtensionBootConfig {
@@ -27,6 +31,10 @@ struct ExtensionBootConfig: Sendable {
             + "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         variables["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path
 
+        var groups = [gid_t](repeating: 0, count: Int(getgroups(0, nil)))
+        let groupCount = getgroups(Int32(groups.count), &groups)
+        groups = Array(groups.prefix(Int(max(groupCount, 0))))
+
         return ExtensionBootConfig(
             arch: arch,
             release: info.operatingSystemVersionString,
@@ -36,8 +44,12 @@ struct ExtensionBootConfig: Sendable {
             homeDirectory: FileManager.default.homeDirectoryForCurrentUser.path,
             temporaryDirectory: FileManager.default.temporaryDirectory.path,
             workingDirectory: supportDirectory.path,
-            cpuCount: info.processorCount,
             totalMemory: Double(info.physicalMemory),
+            userID: getuid(),
+            groupID: getgid(),
+            effectiveUserID: geteuid(),
+            effectiveGroupID: getegid(),
+            groupIDs: groups,
             environmentVariables: variables)
     }
 
@@ -53,8 +65,12 @@ struct ExtensionBootConfig: Sendable {
                     "homedir": homeDirectory,
                     "tmpdir": temporaryDirectory,
                     "cwd": workingDirectory,
-                    "cpus": cpuCount,
                     "totalmem": totalMemory,
+                    "uid": userID,
+                    "gid": groupID,
+                    "euid": effectiveUserID,
+                    "egid": effectiveGroupID,
+                    "groups": groupIDs,
                     "env": environmentVariables,
                     "execPath": ""
                 ]
@@ -62,8 +78,6 @@ struct ExtensionBootConfig: Sendable {
     }
 }
 
-/// Everything one command needs at mount time: its `environment`, resolved preferences, the cache
-/// namespaces it may read synchronously, and its launch arguments.
 struct ExtensionLaunchContext: Sendable {
     var extensionName: String
     var extensionTitle: String
@@ -73,11 +87,13 @@ struct ExtensionLaunchContext: Sendable {
     var supportPath: String
     var preferences: [String: ExtensionPreferenceValue]
     var caches: [String: [String: String]]
+    var formValues: [String: String] = [:]
     var arguments: [String: String]
     var fallbackText: String?
-    /// Injected rather than read: a `Model/` type owns no environment. A running command keeps what
-    /// it booted with, so an appearance change reaches it on the next launch.
+    var launchType: ExtensionLaunchType = .userInitiated
+    /// Injected, never read: a running command keeps what it booted with.
     var isDarkAppearance: Bool
+    var launchContext: [String: RenderValue] = [:]
 
     func jsonString() -> String {
         var environment: [String: Any] = [
@@ -91,19 +107,21 @@ struct ExtensionLaunchContext: Sendable {
             "raycastVersion": ExtensionRuntimeVersion.raycastAPI,
             "textSize": "medium",
             "appearance": isDarkAppearance ? "dark" : "light",
-            "launchType": "userInitiated",
+            "launchType": launchType.rawValue,
             "canAccess": false
         ]
         environment["ownerOrAuthorName"] = extensionTitle
 
-        var launchProps: [String: Any] = ["launchType": "userInitiated", "arguments": arguments]
+        var launchProps: [String: Any] = ["launchType": launchType.rawValue, "arguments": arguments]
         if let fallbackText { launchProps["fallbackText"] = fallbackText }
+        if !launchContext.isEmpty { launchProps["launchContext"] = launchContext.mapValues(\.jsonValue) }
 
         return ExtensionRuntime.jsonString(
             from: [
                 "environment": environment,
                 "preferences": preferences.mapValues(\.jsonValue),
                 "caches": caches,
+                "formValues": formValues,
                 "launchProps": launchProps
             ])
     }
@@ -111,5 +129,5 @@ struct ExtensionLaunchContext: Sendable {
 
 enum ExtensionRuntimeVersion {
     /// The @raycast/api version the bundled shim tracks. Surfaced as `environment.raycastVersion`.
-    static let raycastAPI = "1.104.0"
+    static let raycastAPI = "2.0.3"
 }

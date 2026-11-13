@@ -15,7 +15,7 @@ struct NoteSwitcherView: View {
             results
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .glassEffect(.regular, in: surface)
+        .frostedMenu(in: surface)
         .clipShape(surface)
         .onAppear(perform: focusSearch)
         .onChange(of: notes.switcherFocusRevision) { _, _ in focusSearch() }
@@ -32,7 +32,7 @@ struct NoteSwitcherView: View {
             notes.moveSwitcherSelection(by: -1)
             return .handled
         }
-        .onKeyPress(.return) {
+        .onKeyPress(keys: [.return, KeyEquivalent("\u{3}")]) { _ in
             guard !notes.isRenamingSwitcherNote else { return .ignored }
             notes.selectSwitcherNote()
             return .handled
@@ -95,6 +95,7 @@ struct NoteSwitcherView: View {
                                 },
                                 onCommitRename: notes.commitSwitcherRename,
                                 onCancelRename: notes.cancelSwitcherRename,
+                                onCopyLink: { notes.copyDeepLink(to: summary.id) },
                                 onTrash: { notes.trash(summary.id) }
                             )
                             .id(summary.id)
@@ -139,6 +140,7 @@ private struct NoteSwitcherRow: View {
     let onBeginRename: () -> Void
     let onCommitRename: () -> Void
     let onCancelRename: () -> Void
+    let onCopyLink: () -> Void
     let onTrash: () -> Void
     @State private var hovered = false
     @FocusState private var titleFocused: Bool
@@ -161,15 +163,21 @@ private struct NoteSwitcherRow: View {
                     .onSubmit(onCommitRename)
                     .onExitCommand(perform: onCancelRename)
             } else {
-                Text(summary.title)
+                Text(summary.displayTitle)
                     .font(Theme.Typography.rowTitle)
                     .lineLimit(1)
             }
             Spacer(minLength: Theme.Spacing.md)
             if !editing, selected || hovered {
-                rowButton(title: "Rename \(summary.title)", symbol: "pencil", action: onBeginRename)
-                rowButton(title: "Move \(summary.title) to Trash", symbol: "trash", action: onTrash)
-                    .foregroundStyle(Theme.Colors.destructive)
+                rowButton(
+                    title: String(localized: "Rename \(summary.displayTitle)"), symbol: "pencil",
+                    action: onBeginRename)
+                rowButton(title: String(localized: "Copy Deeplink"), symbol: "link", action: onCopyLink)
+                rowButton(
+                    title: String(localized: "Move \(summary.displayTitle) to Trash"), symbol: "trash",
+                    action: onTrash
+                )
+                .foregroundStyle(Theme.Colors.destructive)
             }
         }
         .padding(.horizontal, Theme.Spacing.md)
@@ -185,17 +193,18 @@ private struct NoteSwitcherRow: View {
         }
         .onHover { hovered = $0 }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(summary.title)
+        .accessibilityLabel(summary.displayTitle)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityAction {
             guard !editing else { return }
             onActivate()
         }
-        .accessibilityAction(named: "Rename \(summary.title)") {
+        .accessibilityAction(named: "Rename \(summary.displayTitle)") {
             guard !editing else { return }
             onBeginRename()
         }
-        .accessibilityAction(named: "Move \(summary.title) to Trash") {
+        .accessibilityAction(named: "Copy Deeplink", onCopyLink)
+        .accessibilityAction(named: "Move \(summary.displayTitle) to Trash") {
             guard !editing else { return }
             onTrash()
         }
