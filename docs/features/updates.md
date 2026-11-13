@@ -53,10 +53,11 @@ uninstall` and `brew list` keep working unchanged.
 - **Only `UpdatePill` reads `stage`.** It stands alone in the footer and the compact header, so a
   download tick never re-renders the palette around it.
 - **Automatic checking is optional; manual checking stays available.** Settings → General →
-  Automatically check for updates defaults on. Turning it off stops the background task and any
-  in-flight automatic request, so neither a response nor a cached release can make a new offer.
-  The preference travels through settings backups and `general.automaticallyCheckForUpdates` in
-  settings.json; release metadata stays in the feature's own cache file.
+  Automatically check for updates defaults off on the macOS 15 channel, and every release there is
+  a prerelease with DMG-only assets, so the feed never offers an update. Turning the toggle on
+  therefore changes nothing on this channel. The preference still travels through settings backups
+  and `general.automaticallyCheckForUpdates` in settings.json; release metadata stays in the
+  feature's own cache file.
 - **The app shows no release notes.** The Changelog item in the palette's app menu opens
   `https://tinycast.dev/changelog/`.
 

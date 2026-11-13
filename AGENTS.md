@@ -10,7 +10,7 @@ dependencies.
 
 **This branch is the macOS 15 (Sequoia) channel**: deployment target 15.0, built with Xcode 26's SDK
 in CI. Keep its source free of macOS 26-only APIs — floating surfaces go through `frosted(in:)` /
-`frostedMenu(in:)` and Apple Intelligence stays a stub. See `compat/README.md`. Everything below
+`frostedMenu(in:)` or `GlassEffectView`, and Apple Intelligence stays a stub. See `compat/README.md`. Everything below
 describes the upstream mainline, which this branch otherwise tracks verbatim.
 
 **Tinycast supports macOS 26 and later, with macOS 27 strongly preferred.** Swift 6+ with complete

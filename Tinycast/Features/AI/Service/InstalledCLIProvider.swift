@@ -455,10 +455,10 @@ private final class InstalledCLITurnRunner {
     }
 
     private func prompt(for request: AIRequest) -> String {
-        var sections = [
-            activeServers.isEmpty && toolSession?.tools.isEmpty != false
-                ? Self.safetyInstructions : Self.toolSafetyInstructions
-        ]
+        let offersTools =
+            !activeServers.isEmpty
+            || (OpenCodeMCPBridge.hostsTools && toolSession?.tools.isEmpty == false)
+        var sections = [offersTools ? Self.toolSafetyInstructions : Self.safetyInstructions]
         if let instructions = request.instructions?.trimmingCharacters(in: .whitespacesAndNewlines),
             !instructions.isEmpty
         {

@@ -25,8 +25,6 @@ struct HyperKeyEngine: Sendable {
     private var downAt: TimeInterval?
     private var used = false
 
-    init() {}
-
     init(route: HyperKeyRoute?, includesShift: Bool = true) {
         self.route = route
         self.includesShift = includesShift

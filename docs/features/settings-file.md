@@ -98,7 +98,7 @@ because the app rewrites the file.
   "general": {
     "language": "en",
     "showInMenuBar": true,
-    "automaticallyCheckForUpdates": true,
+    "automaticallyCheckForUpdates": false,
     "popToRootSeconds": 0,
     "escapeKeyBehavior": "navigateBackOrClose",
     "autoSwitchInputSource": null,

@@ -973,10 +973,11 @@ Debug answers `tinycast-dev://`; use that scheme for every link below.
 
 ### Settings and backup
 
-- General → Automatically check for updates defaults on; turn it off and relaunch: it stays off,
-  no background check or update offer occurs, and Check for Updates still works. Re-enable it:
-  checks resume. Settings search for "updates" reveals the toggle; settings.json edits and a backup
-  round trip preserve the choice.
+- General → Automatically check for updates defaults off on this channel; turn it on and relaunch:
+  it stays on, but no background check or update offer ever occurs because every release here is a
+  prerelease with DMG-only assets. Check for Updates still runs and finds nothing installable.
+  Settings search for "updates" reveals the toggle; settings.json edits and a backup round trip
+  preserve the choice.
 - Every pane renders and the sidebar switches without flicker
 - A feature switch takes effect in the launcher immediately; every setting survives relaunch
 - Export produces a `.tinycast`; import applies it and reports a per-category summary

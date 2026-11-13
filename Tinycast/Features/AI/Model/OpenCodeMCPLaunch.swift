@@ -2,23 +2,29 @@ import Foundation
 
 enum OpenCodeMCPLaunch {
     static func configuration(
-        server: String, url: String, bearer: String, tools: [AITool]
+        server: String? = nil, url: String? = nil, bearer: String? = nil, tools: [AITool]
     ) throws -> String {
         var permissions: [[String: String]] = [
             ["action": "*", "resource": "*", "effect": "deny"]
         ]
-        permissions += tools.indices.map {
-            ["action": server + "_" + toolName(at: $0), "resource": "*", "effect": "allow"]
+        if let server, !tools.isEmpty {
+            permissions += tools.indices.map {
+                ["action": server + "_" + toolName(at: $0), "resource": "*", "effect": "allow"]
+            }
         }
-        let config: [String: Any] = [
+        var config: [String: Any] = [
             "share": "disabled", "snapshots": false,
             "agents": [
                 InstalledAIKind.openCodeAgent: [
-                    "system": "You are generating text inside Tinycast. Use only the supplied MCP tools.",
+                    "system": tools.isEmpty
+                        ? "You are generating text inside Tinycast. Do not invoke tools."
+                        : "You are generating text inside Tinycast. Use only the supplied MCP tools.",
                     "permissions": permissions
                 ]
-            ],
-            "mcp": [
+            ]
+        ]
+        if let server, let url, let bearer {
+            config["mcp"] = [
                 "servers": [
                     server: [
                         "type": "remote", "url": url, "oauth": false, "codemode": false,
@@ -26,7 +32,7 @@ enum OpenCodeMCPLaunch {
                     ]
                 ]
             ]
-        ]
+        }
         let data = try JSONSerialization.data(withJSONObject: config, options: [.sortedKeys])
         guard let text = String(bytes: data, encoding: .utf8) else {
             throw AIProviderError.malformedResponse

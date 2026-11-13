@@ -112702,54 +112702,54 @@
         }
       }
     },
-    "Sign-in could not open loopback port 4962. Close the app using it and retry." : {
+    "OAuth sign-in requires macOS 26. This build cannot open the loopback callback." : {
       "localizations" : {
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Für die Anmeldung konnte der Loopback-Port 4962 nicht geöffnet werden. Schließe die App, die ihn verwendet, und versuche es erneut."
+            "value" : "Die OAuth-Anmeldung erfordert macOS 26. Dieser Build kann den Loopback-Callback nicht öffnen."
           }
         },
         "es" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No se pudo abrir el puerto de bucle local 4962 para iniciar sesión. Cierra la app que lo usa y vuelve a intentarlo."
+            "value" : "El inicio de sesión OAuth requiere macOS 26. Esta compilación no puede abrir la devolución de llamada de bucle local."
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "La connexion n’a pas pu ouvrir le port de bouclage 4962. Fermez l’app qui l’utilise et réessayez."
+            "value" : "La connexion OAuth nécessite macOS 26. Cette version ne peut pas ouvrir le rappel de bouclage."
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "サインインでループバックポート4962を開けませんでした。使用中のAppを閉じてから、再試行してください。"
+            "value" : "OAuthサインインにはmacOS 26が必要です。このビルドではループバックコールバックを開けません。"
           }
         },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "로그인에 필요한 루프백 포트 4962를 열 수 없습니다. 이 포트를 사용하는 앱을 종료하고 다시 시도하십시오."
+            "value" : "OAuth 로그인에는 macOS 26이 필요합니다. 이 빌드에서는 루프백 콜백을 열 수 없습니다."
           }
         },
         "pt" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Não foi possível abrir a porta de loopback 4962 para iniciar sessão. Feche o app que a está usando e tente novamente."
+            "value" : "O início de sessão OAuth requer o macOS 26. Esta compilação não pode abrir a chamada de retorno loopback."
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Не удалось открыть порт loopback 4962 для входа. Закройте использующее его приложение и повторите попытку."
+            "value" : "Для входа через OAuth требуется macOS 26. Эта сборка не может открыть loopback-обработчик."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "登录无法打开回环端口 4962。请关闭正在使用该端口的 App，然后重试。"
+            "value" : "OAuth 登录需要 macOS 26。此版本无法打开回环回调。"
           }
         }
       }
@@ -131361,6 +131361,58 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在翻译…"
+          }
+        }
+      }
+    },
+    "Translation requires macOS 26. This build cannot translate text." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Übersetzung erfordert macOS 26. Dieser Build kann Text nicht übersetzen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La traducción requiere macOS 26. Esta compilación no puede traducir texto."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La traduction nécessite macOS 26. Cette version ne peut pas traduire de texte."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "翻訳にはmacOS 26が必要です。このビルドではテキストを翻訳できません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "번역에는 macOS 26이 필요합니다. 이 빌드에서는 텍스트를 번역할 수 없습니다."
+          }
+        },
+        "pt" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A tradução requer o macOS 26. Esta compilação não pode traduzir texto."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Для перевода требуется macOS 26. Эта сборка не может переводить текст."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "翻译需要 macOS 26。此版本无法翻译文本。"
           }
         }
       }

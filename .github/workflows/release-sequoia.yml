@@ -173,7 +173,9 @@ jobs:
           Built from ${{ github.sha }} (macOS 15 channel sources, upstream v0.12.11).
 
           This is the **macOS 15 (Sequoia)** build. Floating controls use native vibrancy instead of
-          Liquid Glass, and Apple Intelligence is unavailable. All other features are current.
+          Liquid Glass, and Apple Intelligence is unavailable. AI chat, stdio/HTTP MCP tools,
+          dictation, camera, calendar and clipboard history work. MCP OAuth loopback sign-in, OpenCode
+          tool calling and Apple text translation are unavailable on this channel.
 
           Drag \`${{ steps.meta.outputs.display_name }}.app\` into /Applications, then clear the quarantine flag once:
           \`\`\`sh

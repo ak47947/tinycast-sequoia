@@ -25,7 +25,7 @@ struct MCPOAuthTests {
     static func main() async {
         do {
             try pureRules()
-            try await listenerLifecycle()
+            try await listenerUnavailable()
             try await networkFlow()
         } catch { expect(false, "unexpected failure: \(error)") }
         print("\(passes) passed, \(failures) failed")
@@ -208,46 +208,26 @@ struct MCPOAuthTests {
         expect(oldSecrets.headerValue == "old" && oldSecrets.oauth == nil, "old secrets decode")
     }
 
-    static func listenerLifecycle() async throws {
+    static func listenerUnavailable() async throws {
         let listener = MCPOAuthListener()
-        try await listener.start(
-            state: "expected", issuer: "https://auth.test", requiresIssuer: true, timeout: .seconds(10))
-        let competing = MCPOAuthListener()
         do {
-            try await competing.start(
-                state: "other", issuer: "https://auth.test", requiresIssuer: true, timeout: .seconds(2))
-            expect(false, "occupied port must fail")
-        } catch { expect(true, "occupied port fails") }
-        competing.cancel()
-        let bad = URLRequest(url: URL(string: MCPOAuthListener.redirectURI + "?state=wrong&code=c")!)
-        let (_, refused) = try await MCPOAuthHTTP.send(bad)
-        expect(refused.statusCode == 400, "wrong state refused without consuming listener")
-        let target =
-            MCPOAuthListener.redirectURI + "?state=expected&code=fixture-code&iss=https%3A%2F%2Fauth.test"
-        let (_, accepted) = try await MCPOAuthHTTP.send(URLRequest(url: URL(string: target)!))
-        expect(accepted.statusCode == 200, "browser receives close-tab page")
-        let code = try await listener.code()
-        expect(code == "fixture-code", "callback yields code once")
-        try await waitForCallbackPortRelease(before: "timeout listener")
-        let expiring = MCPOAuthListener()
-        try await expiring.start(
-            state: "expected", issuer: "https://auth.test", requiresIssuer: false, timeout: .milliseconds(80))
-        do {
-            _ = try await expiring.code()
-            expect(false, "timeout required")
+            try await listener.start(
+                state: "expected", issuer: "https://auth.test", requiresIssuer: true)
+            expect(false, "the macOS 15 channel has no loopback listener")
         } catch {
-            expect(error as? MCPOAuth.Failure == .timedOut, "timeout tears down listener")
+            expect(
+                error as? MCPOAuth.Failure == .listenerUnavailable,
+                "start reports the channel limit")
         }
-        try await waitForCallbackPortRelease(before: "cancelled listener")
-        let cancelled = MCPOAuthListener()
-        try await cancelled.start(state: "expected", issuer: "https://auth.test", requiresIssuer: false)
-        cancelled.cancel()
         do {
-            _ = try await cancelled.code()
-            expect(false, "cancellation required")
+            _ = try await listener.code()
+            expect(false, "no code without a listener")
         } catch {
-            expect(error is CancellationError, "cancel releases waiter")
+            expect(
+                error as? MCPOAuth.Failure == .listenerUnavailable,
+                "code reports the channel limit")
         }
+        listener.cancel()
     }
 
     static func waitForCallbackPortRelease(before stage: String) async throws {

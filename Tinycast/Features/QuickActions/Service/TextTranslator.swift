@@ -8,6 +8,7 @@ enum TextTranslator {
         case undetectableSource
         case unsupported
         case notInstalled(language: String)
+        case unavailable
         case failed
 
         var errorDescription: String? {
@@ -18,6 +19,9 @@ enum TextTranslator {
                 return String(localized: "Apple's translator does not support this language pair.")
             case .notInstalled(let language):
                 return String(localized: "\(language) needs to be downloaded before it can be used.")
+            case .unavailable:
+                return String(
+                    localized: "Translation requires macOS 26. This build cannot translate text.")
             case .failed:
                 return String(localized: "The text could not be translated.")
             }
@@ -34,8 +38,12 @@ enum TextTranslator {
         return Locale.Language(identifier: dominant.rawValue)
     }
 
+    /// TranslationSession's standalone initializer is macOS 26 only; Sequoia has no equivalent.
+    private static let canTranslate = false
+
     /// Installed pairs only: a missing language is downloaded in System Settings, never from here.
     static func translate(_ text: String, to target: Locale.Language) async throws -> String {
+        guard canTranslate else { throw Failure.unavailable }
         guard let source = sourceLanguage(of: text) else { throw Failure.undetectableSource }
         guard !source.isEquivalent(to: target) else { return text }
         let availability = LanguageAvailability()
@@ -66,8 +74,7 @@ enum TextTranslator {
     private static func translate(
         _ text: String, from source: Locale.Language, to target: Locale.Language
     ) async throws -> String {
-        // TranslationSession's standalone initializer is macOS 26 only; Sequoia has no equivalent.
-        throw Failure.failed
+        throw Failure.unavailable
     }
 
     /// A download is a locale, so the region a bare code resolves to can miss the one installed.

@@ -47,8 +47,8 @@ enum MCPOAuth {
             case .listenerUnavailable:
                 return String(
                     localized: """
-                        Sign-in could not open loopback port 4962. Close the app using it and \
-                        retry.
+                        OAuth sign-in requires macOS 26. This build cannot open the loopback \
+                        callback.
                         """)
             case .signInInProgress:
                 return String(localized: "Another sign-in is still waiting. Finish it first.")
