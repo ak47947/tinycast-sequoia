@@ -32,8 +32,10 @@ xattr -dr com.apple.quarantine "/Applications/Tinycast.app"
 ```
 
 The bundle id stays `com.tinycast.app`, so upgrading from an older Sequoia build keeps settings,
-clipboard history, the login item and the Accessibility grant. There is no in-app updater on this
-channel — download the next `-sequoia` DMG to update.
+clipboard history, the login item and the Accessibility grant. The in-app updater points at this
+repository: its releases are prereleases with DMG-only assets, so nothing is offered automatically,
+and automatic checking defaults to off. Never point it back at upstream — those builds require
+macOS 26. Download the next `-sequoia` DMG to update.
 
 ## Verification scope
 
